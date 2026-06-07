@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/* Restore the original blue-white card style while keeping the new OCR features. */
+.bg-slate-50,
+.bg-slate-50\/70 {
+  background-color: rgb(249 250 251) !important;
+}
+
+.text-slate-800 {
+  color: rgb(31 41 55) !important;
+}
+
+.text-slate-950,
+.text-slate-900 {
+  color: rgb(17 24 39) !important;
+}
+
+.text-slate-700,
+.text-slate-600,
+.text-slate-500 {
+  color: rgb(107 114 128) !important;
+}
+
+.bg-slate-950,
+.bg-slate-900 {
+  background-color: rgb(17 24 39) !important;
+}
+
+.hover\:bg-slate-800:hover {
+  background-color: rgb(31 41 55) !important;
+}
+
+.bg-slate-200,
+.bg-slate-100 {
+  background-color: rgb(229 231 235) !important;
+}
+
+.border-slate-200,
+.border-slate-100 {
+  border-color: rgb(229 231 235) !important;
+}
+
+.bg-emerald-50,
+.bg-emerald-50\/70,
+.bg-emerald-100 {
+  background-color: rgb(239 246 255) !important;
+}
+
+.text-emerald-900,
+.text-emerald-800,
+.text-emerald-700 {
+  color: rgb(29 78 216) !important;
+}
+
+.border-emerald-100,
+.border-emerald-200,
+.border-emerald-300,
+.border-emerald-500,
+.border-emerald-600 {
+  border-color: rgb(191 219 254) !important;
+}
+
+.bg-emerald-600,
+.hover\:bg-emerald-700:hover {
+  background-color: rgb(37 99 235) !important;
+}
+
+.focus\:ring-emerald-500:focus {
+  --tw-ring-color: rgb(59 130 246) !important;
+}
+
+.rounded-3xl {
+  border-radius: 1rem !important;
+}
+
+.max-w-7xl {
+  max-width: 72rem !important;
+}
+
+.min-h-\[820px\] {
+  min-height: 800px !important;
+}
+
+@media (width >= 80rem) {
+  .xl\:grid-cols-\[380px_1fr\] {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .xl\:grid-cols-\[380px_1fr\] > aside {
+    grid-column: span 1 / span 1 !important;
+  }
+
+  .xl\:grid-cols-\[380px_1fr\] > main {
+    grid-column: span 2 / span 2 !important;
+  }
+}

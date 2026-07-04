@@ -1,729 +1,672 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
   AlertCircle,
   BookOpen,
   CheckCircle,
-  Download,
+  FileArchive,
+  FileJson,
   FileText,
+  Plus,
   RefreshCw,
+  RotateCcw,
   ScanText,
+  Settings2,
+  Tags,
   Trash2,
   UploadCloud,
+  XCircle,
 } from 'lucide-react';
+import {
+  CardEditor,
+  type EditableCardField,
+} from './components/CardEditor';
+import {
+  buildAnkiPackage,
+  buildAnkiText,
+  buildCardsJson,
+  downloadBlob,
+  exportFileName,
+} from './exporters';
+import {
+  buildTextbookCards,
+  createCard,
+  DEFAULT_PARSER_TEMPLATE,
+  GENERAL_PARSER_TEMPLATE,
+  parseExamCards,
+  validateParserTemplate,
+} from './parser';
+import { clearDraft, loadDraft, saveDraft } from './storage';
+import type {
+  AppSettings,
+  Card,
+  DraftData,
+  ExtractedPage,
+  ParserTemplate,
+  PdfProgress,
+} from './types';
 
-type ActiveTab = 'upload' | 'text';
-type ParseMode = 'textbook' | 'exam';
-type ExtractMode = 'auto' | 'text' | 'ocr';
-type ExtractMethod = 'text' | 'ocr';
+const DEFAULT_SETTINGS: AppSettings = {
+  activeTab: 'upload',
+  parseMode: 'textbook',
+  extractMode: 'auto',
+  pageStart: '1',
+  pageEnd: '30',
+  ocrScale: '1.8',
+  maxCardsPerPage: '5',
+  maxAnswerLength: '220',
+  deckName: 'Anki 教材与题库卡片',
+  parserTemplate: DEFAULT_PARSER_TEMPLATE,
+};
 
-interface Card {
-  id: string;
-  question: string;
-  options: string;
-  answer: string;
-  point: string;
-  analysis: string;
-  type: string;
-  chapter: string;
-  sourcePage?: number;
-  tags: string[];
-}
+const buttonSecondary =
+  'inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40';
+const inputClass =
+  'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-transparent focus:ring-2 focus:ring-blue-500';
 
-interface ExtractedPage {
-  page: number;
-  text: string;
-  method: ExtractMethod;
-  confidence?: number;
-}
-
-interface TextPage {
-  page?: number;
-  text: string;
-}
-
-declare global {
-  interface Window {
-    pdfjsLib: any;
-    Tesseract?: {
-      recognize: (
-        image: HTMLCanvasElement,
-        language: string,
-        options?: { logger?: (message: any) => void },
-      ) => Promise<{ data: { text: string; confidence?: number } }>;
-    };
-  }
-}
-
-const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js';
-const PDFJS_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-const DEFAULT_OCR_LANGUAGE = 'chi_sim+eng';
-
-const KEYWORD_PATTERNS = [
-  /包括|组成|构成|分为|可分为|主要有/,
-  /特点|特征|性质|原则|规律/,
-  /作用|功能|意义|任务|方法|途径/,
-  /影响|原因|条件|机制|过程/,
-];
-
-function loadExternalScript(id: string, src: string) {
-  return new Promise<void>((resolve, reject) => {
-    const existing = document.getElementById(id) as HTMLScriptElement | null;
-    if (existing?.dataset.loaded === 'true') {
-      resolve();
-      return;
-    }
-
-    const script = existing ?? document.createElement('script');
-    script.id = id;
-    script.src = src;
-    script.async = true;
-    script.onload = () => {
-      script.dataset.loaded = 'true';
-      resolve();
-    };
-    script.onerror = () => reject(new Error(`脚本加载失败：${src}`));
-
-    if (!existing) document.body.appendChild(script);
-  });
-}
-
-async function ensurePdfJs() {
-  if (!window.pdfjsLib) await loadExternalScript('pdfjs-script', PDFJS_SRC);
-  if (!window.pdfjsLib) throw new Error('PDF.js 未加载成功');
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
-}
-
-async function ensureTesseract() {
-  if (!window.Tesseract) await loadExternalScript('tesseract-script', TESSERACT_SRC);
-  if (!window.Tesseract) throw new Error('OCR 引擎未加载成功');
-}
-
-function clampPage(value: string, fallback: number, max: number) {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed)) return fallback;
-  return Math.min(Math.max(parsed, 1), max);
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function textToHtml(value: string) {
-  return escapeHtml(value.trim()).replace(/\n/g, '<br>');
-}
-
-function normalizeSpaces(value: string) {
-  return value
-    .replace(/\u3000/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function cleanTextbookText(value: string) {
-  return normalizeSpaces(value)
-    .replace(/香气物联网\s*P?D?G?/g, '')
-    .replace(/农业生态学\s*$/gm, '')
-    .replace(/^\s*[·•]\s*\d+\s*[·•]?\s*$/gm, '')
-    .replace(/^\s*\d+\s*$/gm, '')
-    .replace(/-{2,}\s*PAGE\s*\d+\s*-{2,}/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function splitSentences(value: string) {
-  return value
-    .replace(/([。！？；])/g, '$1\n')
-    .split('\n')
-    .map((item) => item.trim())
-    .filter((item) => item.length >= 18);
-}
-
-function isChapterLine(line: string) {
-  return /^第[一二三四五六七八九十百千\d]+章\s*.{0,50}$/.test(line.trim());
-}
-
-function isSectionLine(line: string) {
-  return /^第[一二三四五六七八九十百千\d]+节\s*.{0,50}$/.test(line.trim());
-}
-
-function isHeadingLine(line: string) {
-  const trimmed = line.trim();
-  if (trimmed.length > 42) return false;
-  return /^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\d+[.、])\s*\S+/.test(trimmed);
-}
-
-function slimAnswer(value: string, maxLength: number) {
-  const compact = normalizeSpaces(value).replace(/\n+/g, '\n');
-  if (compact.length <= maxLength) return compact;
-  const sliced = compact.slice(0, maxLength);
-  const lastStop = Math.max(sliced.lastIndexOf('。'), sliced.lastIndexOf('；'), sliced.lastIndexOf('，'));
-  return `${sliced.slice(0, lastStop > 80 ? lastStop + 1 : maxLength)}……`;
-}
-
-function makeCard(input: Omit<Card, 'id' | 'tags'> & { tags?: string[] }) {
+function cloneTemplate(template: ParserTemplate): ParserTemplate {
   return {
-    ...input,
-    id: crypto.randomUUID(),
-    tags: input.tags ?? [],
+    ...template,
+    answerLabels: [...template.answerLabels],
+    pointLabels: [...template.pointLabels],
+    analysisLabels: [...template.analysisLabels],
+    trailingLabels: [...template.trailingLabels],
   };
 }
 
-function buildFront(card: Card) {
-  return card.options
-    ? `${textToHtml(card.question)}<br><br>${textToHtml(card.options)}`
-    : textToHtml(card.question);
-}
-
-function buildBack(card: Card) {
-  const meta = [card.chapter, card.sourcePage ? `PDF 第 ${card.sourcePage} 页` : '', card.type]
-    .filter(Boolean)
-    .join(' ｜ ');
-
-  const parts = [`<b>答案：</b><br>${textToHtml(card.answer)}`];
-  if (card.point) parts.push(`<b>考点：</b>${textToHtml(card.point)}`);
-  if (card.analysis) parts.push(`<b>解析：</b><br>${textToHtml(card.analysis)}`);
-  if (meta) parts.push(`<span style="color:#666;font-size:12px">${textToHtml(meta)}</span>`);
-  return parts.join('<br><br>');
-}
-
-function buildTextFromPdfItems(items: Array<{ str: string; transform?: number[] }>) {
-  let text = '';
-  let lastY: number | null = null;
-
-  items.forEach((item) => {
-    const y = Math.round(item.transform?.[5] ?? 0);
-    if (lastY !== null && Math.abs(y - lastY) > 6) text += '\n';
-    else if (text && !text.endsWith('\n')) text += ' ';
-    text += item.str;
-    lastY = y;
-  });
-
-  return normalizeSpaces(text);
-}
-
-function buildTextbookCards(pages: TextPage[], maxAnswerLength: number, maxCardsPerPage: number) {
-  const cards: Card[] = [];
-  const seen = new Set<string>();
-  let currentChapter = '未识别章节';
-  let currentHeading = '';
-
-  const push = (card: Omit<Card, 'id' | 'tags'> & { tags?: string[] }) => {
-    const key = `${card.question}|${card.answer.slice(0, 30)}`;
-    if (seen.has(key)) return;
-    if (card.question.length < 6 || card.answer.length < 14) return;
-    seen.add(key);
-    cards.push(makeCard(card));
+function normalizeDraftSettings(settings: AppSettings): AppSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    parserTemplate: {
+      ...cloneTemplate(DEFAULT_PARSER_TEMPLATE),
+      ...settings.parserTemplate,
+    },
   };
-
-  pages.forEach((page) => {
-    const sourcePage = page.page;
-    const text = cleanTextbookText(page.text);
-    if (!text) return;
-
-    const lines = text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    const pageStartCount = cards.length;
-    const paragraphs: string[] = [];
-    let buffer = '';
-
-    lines.forEach((line) => {
-      if (isChapterLine(line)) {
-        currentChapter = line;
-        currentHeading = '';
-        return;
-      }
-      if (isSectionLine(line) || isHeadingLine(line)) {
-        if (buffer) {
-          paragraphs.push(buffer);
-          buffer = '';
-        }
-        currentHeading = line.replace(/^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\d+[.、])\s*/, '');
-        return;
-      }
-
-      buffer += buffer ? line : line;
-      if (/[。！？；]$/.test(line) || buffer.length >= 220) {
-        paragraphs.push(buffer);
-        buffer = '';
-      }
-    });
-
-    if (buffer) paragraphs.push(buffer);
-
-    paragraphs.forEach((paragraph) => {
-      if (cards.length - pageStartCount >= maxCardsPerPage) return;
-      const sentences = splitSentences(paragraph);
-      const joined = slimAnswer(sentences.slice(0, 3).join(''), maxAnswerLength);
-      const chapter = currentChapter;
-      const topic = currentHeading || chapter.replace(/^第[一二三四五六七八九十百千\d]+章\s*/, '') || '本节内容';
-
-      const definitionMatch = paragraph.match(/([\u4e00-\u9fa5A-Za-z0-9（）()·—-]{2,22})(?:是指|是|指)([^。！？；]{18,220}[。！？；]?)/);
-      if (definitionMatch) {
-        const term = definitionMatch[1]
-          .replace(/^[的地得和与及其这种一个一种]+/, '')
-          .replace(/[，。；：:、]/g, '')
-          .trim();
-        const definition = slimAnswer(`${term}${paragraph.includes('是指') ? '是指' : paragraph.includes('指') ? '指' : '是'}${definitionMatch[2]}`, maxAnswerLength);
-        if (term.length >= 2 && term.length <= 18) {
-          push({
-            question: `什么是${term}？`,
-            options: '',
-            answer: definition,
-            point: topic,
-            analysis: '由教材正文自动抽取定义句，建议预览后保留或精修。',
-            type: '名词解释',
-            chapter,
-            sourcePage,
-            tags: ['教材OCR', '名词解释', chapter],
-          });
-        }
-      }
-
-      if (cards.length - pageStartCount >= maxCardsPerPage) return;
-      const hasKeyword = KEYWORD_PATTERNS.some((pattern) => pattern.test(paragraph));
-      if (hasKeyword && joined.length >= 35) {
-        const questionPrefix = /包括|组成|构成|分为|可分为|主要有/.test(paragraph)
-          ? '简述其组成或分类。'
-          : /作用|功能|意义|任务|方法|途径/.test(paragraph)
-            ? '简述其作用、意义或方法。'
-            : '简述教材中的核心要点。';
-        push({
-          question: `${topic}：${questionPrefix}`,
-          options: '',
-          answer: joined,
-          point: topic,
-          analysis: '命中“组成/特点/作用/影响”等高频考点词后自动生成。',
-          type: '简答题',
-          chapter,
-          sourcePage,
-          tags: ['教材OCR', '简答', chapter],
-        });
-      }
-
-      if (cards.length - pageStartCount >= maxCardsPerPage) return;
-      const fillSentence = sentences.find((sentence) => /是|包括|分为|具有/.test(sentence) && sentence.length <= 120);
-      if (fillSentence) {
-        const fillTerm = definitionMatch?.[1]?.replace(/[，。；：:、]/g, '').trim() || topic.slice(0, 12);
-        if (fillTerm.length >= 2) {
-          push({
-            question: fillSentence.replace(fillTerm, '____'),
-            options: '',
-            answer: fillTerm,
-            point: topic,
-            analysis: fillSentence,
-            type: '填空题',
-            chapter,
-            sourcePage,
-            tags: ['教材OCR', '填空', chapter],
-          });
-        }
-      }
-    });
-  });
-
-  return cards;
 }
 
-function parseExamCards(text: string) {
-  let cleanText = text
-    .replace(/关注小 Red 书@刑法于越.*?\n/g, '')
-    .replace(/--- PAGE \d+ ---\n?/g, '')
-    .replace(/\r/g, '');
+function progressText(progress: PdfProgress | null): string {
+  if (!progress) return '';
+  if (progress.stage === 'loading') return '正在载入 PDF...';
+  if (progress.stage === 'ocr' && progress.total === 100) {
+    return `${progress.detail ?? '正在 OCR'}：${progress.completed}%`;
+  }
+  return `${progress.detail ?? '处理中'}（${progress.completed}/${progress.total}）`;
+}
 
-  cleanText = `\n${cleanText}`;
-  const blocks = cleanText.split(/\n(?=\d+\s*-\s*\d+(?:\s*-\s*\d+)?\s)/);
-  const extractedCards: Card[] = [];
-  const sectionEndRegex = /\n\s*(?:>\s*)?【\s*(?:拓\s*展|子\s*题|小\s*结|命\s*题\s*角\s*度)/;
+function parsePositiveInt(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
-  blocks.forEach((block) => {
-    if (!block.trim()) return;
-
-    const qMatch = block.match(/^(\d+\s*-\s*\d+(?:\s*-\s*\d+)?\s.*?)(?=\n\s*[A-D][.、]|【\s*答\s*案\s*】|答\s*案\s*[:：])/s);
-    const optMatch = block.match(/(\n\s*[A-D][.、].*?)(?=【\s*答\s*案\s*】|答\s*案\s*[:：])/s);
-    const ansMatch = block.match(/(?:【\s*答\s*案\s*】|答\s*案\s*[:：])\s*([A-D]+)/i);
-    const ptMatch = block.match(/(?:【\s*考\s*点\s*】|考\s*点\s*[:：])\s*(.*?)(?=\n\s*【|\n\s*解\s*析|$)/s);
-
-    if (!qMatch || !ansMatch) return;
-
-    const question = qMatch[1].trim().replace(/\n/g, '');
-    const options = optMatch ? optMatch[1].trim().replace(/\n/g, '\n') : '';
-    const answer = ansMatch[1].trim().toUpperCase();
-    const point = ptMatch ? ptMatch[1].trim().replace(/\n/g, '') : '';
-    let analysis = '';
-
-    const anaMatch = block.match(/(?:【\s*解\s*析\s*】|解\s*析\s*[:：])\s*(.*?)(?=\n\s*(?:>\s*)?【\s*(?:拓\s*展|子\s*题|小\s*结|命\s*题\s*角\s*度)|$)/s);
-    if (anaMatch && anaMatch[1].trim()) {
-      analysis = anaMatch[1].trim();
-    } else if (ptMatch) {
-      const afterPointIdx = block.indexOf(ptMatch[0]) + ptMatch[0].length;
-      const afterPoint = block.substring(afterPointIdx).trim().replace(/^[【\[]?\s*解\s*析\s*[】\]]?[：:]?\s*/, '');
-      analysis = afterPoint.split(sectionEndRegex)[0].trim();
-    } else {
-      const afterAnsIdx = block.indexOf(ansMatch[0]) + ansMatch[0].length;
-      const afterAns = block.substring(afterAnsIdx).trim().replace(/^[【\[]?\s*解\s*析\s*[】\]]?[：:]?\s*/, '');
-      analysis = afterAns.split(sectionEndRegex)[0].trim();
-    }
-
-    extractedCards.push(
-      makeCard({
-        question,
-        options,
-        answer,
-        point,
-        analysis,
-        type: '选择题',
-        chapter: '刑法母子题',
-        tags: ['刑法', '选择题', point].filter(Boolean),
-      }),
-    );
-  });
-
-  return extractedCards;
+function splitLabels(value: string): string[] {
+  return value
+    .split(/[,，]/)
+    .map((label) => label.trim())
+    .filter(Boolean);
 }
 
 export default function App() {
   const [inputText, setInputText] = useState('');
   const [cards, setCards] = useState<Card[]>([]);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastDeletedSnapshot, setLastDeletedSnapshot] = useState<Card[] | null>(
+    null,
+  );
+  const [statusMessage, setStatusMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('upload');
-  const [parseMode, setParseMode] = useState<ParseMode>('textbook');
-  const [extractMode, setExtractMode] = useState<ExtractMode>('auto');
-  const [pageStart, setPageStart] = useState('20');
-  const [pageEnd, setPageEnd] = useState('37');
-  const [ocrScale, setOcrScale] = useState('1.6');
-  const [maxCardsPerPage, setMaxCardsPerPage] = useState('5');
-  const [maxAnswerLength, setMaxAnswerLength] = useState('220');
-  const [statusMsg, setStatusMsg] = useState('');
-  const [errorMsg, setErrorMsg] = useState('');
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isExportingPackage, setIsExportingPackage] = useState(false);
+  const [draftReady, setDraftReady] = useState(false);
+  const [bulkTag, setBulkTag] = useState('');
+  const [bulkType, setBulkType] = useState('简答题');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    ensurePdfJs().catch(() => {
-      setErrorMsg('PDF 解析脚本预加载失败。稍后上传时会再次尝试加载。');
-    });
+    let active = true;
+    void loadDraft()
+      .then((draft) => {
+        if (!active || !draft || draft.version !== 1) return;
+        setInputText(draft.inputText);
+        setCards(draft.cards);
+        setSettings(normalizeDraftSettings(draft.settings));
+        setStatusMessage(
+          `已恢复 ${new Date(draft.savedAt).toLocaleString()} 的草稿。`,
+        );
+      })
+      .catch(() => {
+        if (active) setErrorMessage('草稿恢复失败，但不影响继续使用。');
+      })
+      .finally(() => {
+        if (active) setDraftReady(true);
+      });
+    return () => {
+      active = false;
+      abortControllerRef.current?.abort();
+    };
   }, []);
 
-  const processText = (text: string) => {
-    setIsProcessing(true);
-    setErrorMsg('');
-    setStatusMsg('正在生成卡片...');
+  useEffect(() => {
+    if (!draftReady) return;
+    const timeout = window.setTimeout(() => {
+      const draft: DraftData = {
+        version: 1,
+        inputText,
+        cards,
+        settings,
+        savedAt: Date.now(),
+      };
+      void saveDraft(draft);
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [cards, draftReady, inputText, settings]);
 
-    try {
-      const generated = parseMode === 'exam'
-        ? parseExamCards(text)
-        : buildTextbookCards(
-            [{ text }],
-            Number.parseInt(maxAnswerLength, 10) || 220,
-            Number.parseInt(maxCardsPerPage, 10) || 5,
-          );
-
-      setCards(generated);
-      if (generated.length === 0) {
-        setErrorMsg(parseMode === 'exam'
-          ? '未识别到符合“题干/选项/答案/解析”结构的题目，请检查文本格式。'
-          : '暂未生成卡片。建议换正文页、开启 OCR，或把页码范围缩小到具体章节。');
-      }
-      setStatusMsg(`完成：生成 ${generated.length} 张卡片。`);
-    } catch (err) {
-      setErrorMsg(`解析出错：${(err as Error).message}`);
-    } finally {
-      setIsProcessing(false);
-    }
+  const updateSetting = <K extends keyof AppSettings>(
+    key: K,
+    value: AppSettings[K],
+  ) => {
+    setSettings((current) => ({ ...current, [key]: value }));
   };
 
-  const ocrPage = async (page: any, pageNumber: number, totalSelectedPages: number) => {
-    await ensureTesseract();
-    const scale = Number.parseFloat(ocrScale) || 1.6;
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Canvas 初始化失败');
-
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
-    await page.render({ canvasContext: context, viewport }).promise;
-
-    const result = await window.Tesseract!.recognize(canvas, DEFAULT_OCR_LANGUAGE, {
-      logger: (message) => {
-        if (message?.status === 'recognizing text' && typeof message.progress === 'number') {
-          setStatusMsg(`OCR 第 ${pageNumber}/${totalSelectedPages} 页：${Math.round(message.progress * 100)}%`);
-        }
+  const updateTemplate = <K extends keyof ParserTemplate>(
+    key: K,
+    value: ParserTemplate[K],
+  ) => {
+    setSettings((current) => ({
+      ...current,
+      parserTemplate: {
+        ...current.parserTemplate,
+        id: 'custom',
+        [key]: value,
       },
-    });
-
-    canvas.width = 0;
-    canvas.height = 0;
-    return {
-      text: normalizeSpaces(result.data.text || ''),
-      confidence: result.data.confidence,
-    };
+    }));
   };
 
-  const extractPdfPages = async (file: File) => {
-    await ensurePdfJs();
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const start = clampPage(pageStart, 1, pdf.numPages);
-    const end = clampPage(pageEnd, Math.min(start + 17, pdf.numPages), pdf.numPages);
-    const safeStart = Math.min(start, end);
-    const safeEnd = Math.max(start, end);
-    const totalSelectedPages = safeEnd - safeStart + 1;
+  const replaceCards = (generated: Card[]): void => {
+    setCards(generated);
+    setSelectedIds(new Set());
+    setLastDeletedSnapshot(null);
+  };
 
-    if (extractMode !== 'text' && totalSelectedPages > 45) {
-      throw new Error('OCR 很慢，建议一次处理 10–30 页。请先缩小页码范围，生成稳定后再分章处理。');
-    }
-
-    const extractedPages: ExtractedPage[] = [];
-
-    for (let pageNumber = safeStart; pageNumber <= safeEnd; pageNumber += 1) {
-      setStatusMsg(`读取 PDF 第 ${pageNumber}/${safeEnd} 页...`);
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      const nativeText = buildTextFromPdfItems(textContent.items);
-      const shouldUseOcr = extractMode === 'ocr' || (extractMode === 'auto' && nativeText.replace(/\s/g, '').length < 80);
-
-      if (!shouldUseOcr) {
-        extractedPages.push({ page: pageNumber, text: nativeText, method: 'text' });
-        continue;
+  const generateCards = (
+    text: string,
+    extractedPages?: ExtractedPage[],
+  ): Card[] => {
+    if (settings.parseMode === 'exam') {
+      const result = parseExamCards(text, settings.parserTemplate);
+      if (!result.cards.length) {
+        throw new Error(
+          result.candidateCount
+            ? '找到了题号，但缺少可识别的题干或答案标签。'
+            : '未找到符合当前模板的题号，请检查题号正则或切换模板。',
+        );
       }
-
-      const ocrResult = await ocrPage(page, pageNumber - safeStart + 1, totalSelectedPages);
-      extractedPages.push({
-        page: pageNumber,
-        text: ocrResult.text,
-        method: 'ocr',
-        confidence: ocrResult.confidence,
-      });
+      if (result.skippedCount) {
+        setStatusMessage(
+          `生成 ${result.cards.length} 张卡片，跳过 ${result.skippedCount} 道不完整题目。`,
+        );
+      }
+      return result.cards;
     }
 
-    return extractedPages;
+    const generated = buildTextbookCards(
+      extractedPages ?? [{ text }],
+      parsePositiveInt(settings.maxAnswerLength, 220),
+      parsePositiveInt(settings.maxCardsPerPage, 5),
+    );
+    if (!generated.length) {
+      throw new Error(
+        '没有生成教材卡片。请选择正文页、提高 OCR 清晰度，或粘贴包含完整定义和要点的正文。',
+      );
+    }
+    return generated;
   };
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const processPastedText = (): void => {
+    setErrorMessage('');
+    setStatusMessage('正在生成卡片...');
+    try {
+      const generated = generateCards(inputText);
+      replaceCards(generated);
+      setStatusMessage(`完成：生成 ${generated.length} 张卡片。`);
+    } catch (error) {
+      setErrorMessage((error as Error).message);
+      setStatusMessage('');
+    }
+  };
 
-    if (file.type !== 'application/pdf') {
-      setErrorMsg('请上传 PDF 格式文件');
+  const handleFileUpload = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ): Promise<void> => {
+    const file = event.target.files?.[0];
+    if (!file || isProcessing) return;
+    if (
+      file.type !== 'application/pdf' &&
+      !file.name.toLowerCase().endsWith('.pdf')
+    ) {
+      setErrorMessage('请选择 PDF 格式的文件。');
+      event.target.value = '';
       return;
     }
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setIsProcessing(true);
-    setErrorMsg('');
-    setStatusMsg('准备读取 PDF...');
-    setCards([]);
+    setErrorMessage('');
+    setStatusMessage('准备读取 PDF...');
+    setPdfProgress({ stage: 'loading', completed: 0, total: 0 });
 
     try {
-      const extractedPages = await extractPdfPages(file);
+      const { extractPdfPages } = await import('./pdf');
+      const extractedPages = await extractPdfPages(file, {
+        pageStart: parsePositiveInt(settings.pageStart, 1),
+        pageEnd: parsePositiveInt(settings.pageEnd, 30),
+        extractMode: settings.extractMode,
+        ocrScale: Number.parseFloat(settings.ocrScale) || 1.8,
+        signal: controller.signal,
+        onProgress: setPdfProgress,
+      });
       const fullText = extractedPages
-        .map((page) => `--- PAGE ${page.page} [${page.method}] ---\n${page.text}`)
+        .map(
+          (page) =>
+            `--- PAGE ${page.page} [${page.method}] ---\n${page.text}`,
+        )
         .join('\n\n');
+      const generated = generateCards(fullText, extractedPages);
+      const ocrCount = extractedPages.filter(
+        (page) => page.method === 'ocr',
+      ).length;
       setInputText(fullText);
-
-      const generated = parseMode === 'exam'
-        ? parseExamCards(fullText)
-        : buildTextbookCards(
-            extractedPages,
-            Number.parseInt(maxAnswerLength, 10) || 220,
-            Number.parseInt(maxCardsPerPage, 10) || 5,
-          );
-
-      setCards(generated);
-      const ocrCount = extractedPages.filter((page) => page.method === 'ocr').length;
-      const textCount = extractedPages.length - ocrCount;
-      setStatusMsg(`完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页，文本 ${textCount} 页），生成 ${generated.length} 张卡片。`);
-
-      if (generated.length === 0) {
-        setErrorMsg('已读取 PDF，但没有生成卡片。建议切到“教材背诵卡”、选择正文页，并开启 OCR。');
+      replaceCards(generated);
+      setStatusMessage(
+        `完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页），生成 ${generated.length} 张卡片。`,
+      );
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        setStatusMessage('已取消 PDF 处理，原有卡片未被覆盖。');
+      } else {
+        setErrorMessage(`PDF 处理失败：${(error as Error).message}`);
+        setStatusMessage('');
       }
-    } catch (err) {
-      setErrorMsg(`PDF 处理失败：${(err as Error).message}`);
-      setStatusMsg('');
     } finally {
+      abortControllerRef.current = null;
       setIsProcessing(false);
+      setPdfProgress(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const updateCard = (id: string, field: 'question' | 'answer' | 'point' | 'analysis', value: string) => {
-    setCards((current) => current.map((card) => (card.id === id ? { ...card, [field]: value } : card)));
+  const cancelProcessing = (): void => {
+    abortControllerRef.current?.abort();
   };
 
-  const removeCard = (id: string) => {
-    setCards((current) => current.filter((card) => card.id !== id));
+  const updateCard = (
+    id: string,
+    field: EditableCardField,
+    value: string | string[],
+  ): void => {
+    setLastDeletedSnapshot(null);
+    setCards((current) =>
+      current.map((card) =>
+        card.id === id ? ({ ...card, [field]: value } as Card) : card,
+      ),
+    );
   };
 
-  const exportToAnki = () => {
-    if (cards.length === 0) return;
-
-    const content = cards.map((card) => `${buildFront(card)}\t${buildBack(card)}`).join('\n');
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const filePrefix = parseMode === 'exam' ? 'Anki_题库解析' : 'Anki_教材背诵卡';
-
-    a.href = url;
-    a.download = `${filePrefix}_${cards.length}张.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  const deleteCards = (ids: Set<string>): void => {
+    if (!ids.size) return;
+    setLastDeletedSnapshot(cards);
+    setCards((current) => current.filter((card) => !ids.has(card.id)));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+    setStatusMessage(`已删除 ${ids.size} 张卡片，可立即撤销。`);
   };
 
-  const exportToJson = () => {
-    if (cards.length === 0) return;
-
-    const payload = cards.map((card) => ({
-      ...card,
-      front: buildFront(card),
-      back: buildBack(card),
-    }));
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-
-    a.href = url;
-    a.download = `cards_${cards.length}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  const undoDelete = (): void => {
+    if (!lastDeletedSnapshot) return;
+    setCards(lastDeletedSnapshot);
+    setLastDeletedSnapshot(null);
+    setStatusMessage('已撤销删除。');
   };
+
+  const toggleCard = (id: string): void => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllCards = (): void => {
+    setSelectedIds((current) =>
+      current.size === cards.length
+        ? new Set()
+        : new Set(cards.map((card) => card.id)),
+    );
+  };
+
+  const applyBulkTag = (): void => {
+    const tag = bulkTag.trim();
+    if (!tag || !selectedIds.size) return;
+    setLastDeletedSnapshot(null);
+    setCards((current) =>
+      current.map((card) =>
+        selectedIds.has(card.id)
+          ? { ...card, tags: [...new Set([...card.tags, tag])] }
+          : card,
+      ),
+    );
+    setBulkTag('');
+    setStatusMessage(`已为 ${selectedIds.size} 张卡片添加标签“${tag}”。`);
+  };
+
+  const applyBulkType = (): void => {
+    if (!bulkType.trim() || !selectedIds.size) return;
+    setLastDeletedSnapshot(null);
+    setCards((current) =>
+      current.map((card) =>
+        selectedIds.has(card.id) ? { ...card, type: bulkType.trim() } : card,
+      ),
+    );
+    setStatusMessage(`已批量修改 ${selectedIds.size} 张卡片类型。`);
+  };
+
+  const addBlankCard = (): void => {
+    const card = createCard({
+      question: '',
+      options: '',
+      answer: '',
+      point: '',
+      analysis: '',
+      type: settings.parseMode === 'exam' ? '选择题' : '简答题',
+      chapter: '',
+      tags: ['手动添加'],
+    });
+    setLastDeletedSnapshot(null);
+    setCards((current) => [card, ...current]);
+    setStatusMessage('已添加空白卡片，请在预览区编辑。');
+  };
+
+  const exportText = (): void => {
+    if (!cards.length) return;
+    downloadBlob(
+      new Blob([buildAnkiText(cards)], { type: 'text/plain;charset=utf-8' }),
+      exportFileName(settings.deckName, cards.length, 'txt'),
+    );
+  };
+
+  const exportJson = (): void => {
+    if (!cards.length) return;
+    downloadBlob(
+      new Blob([buildCardsJson(cards)], {
+        type: 'application/json;charset=utf-8',
+      }),
+      exportFileName(settings.deckName, cards.length, 'json'),
+    );
+  };
+
+  const exportPackage = async (): Promise<void> => {
+    if (!cards.length || isExportingPackage) return;
+    setIsExportingPackage(true);
+    setErrorMessage('');
+    setStatusMessage('正在生成 Anki .apkg 包...');
+    try {
+      const blob = await buildAnkiPackage(cards, settings.deckName);
+      downloadBlob(
+        blob,
+        exportFileName(settings.deckName, cards.length, 'apkg'),
+      );
+      setStatusMessage(`已生成包含 ${cards.length} 张卡片的 .apkg。`);
+    } catch (error) {
+      setErrorMessage(`Anki 包生成失败：${(error as Error).message}`);
+      setStatusMessage('');
+    } finally {
+      setIsExportingPackage(false);
+    }
+  };
+
+  const resetWorkspace = async (): Promise<void> => {
+    if (
+      (cards.length || inputText) &&
+      !window.confirm('确定清空当前卡片、文本和本地草稿吗？')
+    ) {
+      return;
+    }
+    await clearDraft();
+    setCards([]);
+    setInputText('');
+    setSettings(DEFAULT_SETTINGS);
+    setSelectedIds(new Set());
+    setLastDeletedSnapshot(null);
+    setErrorMessage('');
+    setStatusMessage('工作区已清空。');
+  };
+
+  const selectTemplate = (id: string): void => {
+    const template =
+      id === GENERAL_PARSER_TEMPLATE.id
+        ? GENERAL_PARSER_TEMPLATE
+        : DEFAULT_PARSER_TEMPLATE;
+    updateSetting('parserTemplate', cloneTemplate(template));
+  };
+
+  const templateError = validateParserTemplate(settings.parserTemplate);
+  const selectedCount = selectedIds.size;
+  const allSelected = cards.length > 0 && selectedCount === cards.length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <header className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="min-h-screen bg-slate-50 p-4 text-slate-800 sm:p-6">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <header className="flex flex-col gap-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 text-emerald-700 px-3 py-1 text-xs font-semibold">
-              <ScanText size={14} /> OCR 教材制卡版
+            <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+              <ScanText size={14} /> PDF · OCR · Anki 一体化
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-slate-950 tracking-tight">Anki 批量制卡引擎</h1>
-              <p className="text-slate-500 text-sm mt-1">支持扫描版教材 PDF：OCR 识别、章节切块、自动生成名词解释/简答/填空卡。</p>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-950">
+                Anki 批量制卡引擎
+              </h1>
+              <p className="mt-1 text-sm text-slate-500">
+                兼容教材与题库，支持本地解析、OCR、人工精修和直接导出
+                .apkg。
+              </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2">
             <button
-              onClick={exportToJson}
-              disabled={cards.length === 0}
-              className="flex items-center gap-2 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 px-4 py-2.5 rounded-xl font-medium border border-slate-200 transition-all active:scale-95"
+              type="button"
+              onClick={exportJson}
+              disabled={!cards.length}
+              className={buttonSecondary}
             >
-              <FileText size={18} /> 导出 JSON
+              <FileJson size={17} /> JSON
             </button>
             <button
-              onClick={exportToAnki}
-              disabled={cards.length === 0}
-              className="flex items-center gap-2 bg-slate-950 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-xl font-medium transition-all shadow-sm active:scale-95"
+              type="button"
+              onClick={exportText}
+              disabled={!cards.length}
+              className={buttonSecondary}
             >
-              <Download size={18} /> 导出 {cards.length} 张 Anki 卡
+              <FileText size={17} /> Anki TXT
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportPackage()}
+              disabled={!cards.length || isExportingPackage}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {isExportingPackage ? (
+                <RefreshCw size={17} className="animate-spin" />
+              ) : (
+                <FileArchive size={17} />
+              )}
+              导出 .apkg
             </button>
           </div>
         </header>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[380px_1fr] gap-6">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[390px_1fr]">
           <aside className="space-y-4">
-            <section className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
+            <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
               <div className="flex border-b border-slate-100">
                 <button
-                  className={`flex-1 py-3 text-sm font-medium transition-colors ${activeTab === 'upload' ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-600' : 'text-slate-500 hover:bg-slate-50'}`}
-                  onClick={() => setActiveTab('upload')}
+                  type="button"
+                  aria-pressed={settings.activeTab === 'upload'}
+                  onClick={() => updateSetting('activeTab', 'upload')}
+                  className={`flex-1 py-3 text-sm font-medium transition ${
+                    settings.activeTab === 'upload'
+                      ? 'border-b-2 border-blue-600 bg-blue-50 text-blue-700'
+                      : 'text-slate-500 hover:bg-slate-50'
+                  }`}
                 >
                   PDF 上传
                 </button>
                 <button
-                  className={`flex-1 py-3 text-sm font-medium transition-colors ${activeTab === 'text' ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-600' : 'text-slate-500 hover:bg-slate-50'}`}
-                  onClick={() => setActiveTab('text')}
+                  type="button"
+                  aria-pressed={settings.activeTab === 'text'}
+                  onClick={() => updateSetting('activeTab', 'text')}
+                  className={`flex-1 py-3 text-sm font-medium transition ${
+                    settings.activeTab === 'text'
+                      ? 'border-b-2 border-blue-600 bg-blue-50 text-blue-700'
+                      : 'text-slate-500 hover:bg-slate-50'
+                  }`}
                 >
                   文本粘贴
                 </button>
               </div>
 
-              <div className="p-5 space-y-5">
+              <div className="space-y-5 p-5">
                 <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
                   <button
-                    onClick={() => setParseMode('textbook')}
-                    className={`rounded-xl py-2 text-sm font-semibold transition ${parseMode === 'textbook' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500'}`}
+                    type="button"
+                    onClick={() => updateSetting('parseMode', 'textbook')}
+                    className={`rounded-xl py-2 text-sm font-semibold transition ${
+                      settings.parseMode === 'textbook'
+                        ? 'bg-white text-slate-950 shadow-sm'
+                        : 'text-slate-500'
+                    }`}
                   >
                     教材背诵卡
                   </button>
                   <button
-                    onClick={() => setParseMode('exam')}
-                    className={`rounded-xl py-2 text-sm font-semibold transition ${parseMode === 'exam' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500'}`}
+                    type="button"
+                    onClick={() => updateSetting('parseMode', 'exam')}
+                    className={`rounded-xl py-2 text-sm font-semibold transition ${
+                      settings.parseMode === 'exam'
+                        ? 'bg-white text-slate-950 shadow-sm'
+                        : 'text-slate-500'
+                    }`}
                   >
                     题库解析卡
                   </button>
                 </div>
 
-                {activeTab === 'upload' ? (
+                {settings.activeTab === 'upload' ? (
                   <div className="space-y-4">
-                    <div
-                      className="border-2 border-dashed border-slate-200 rounded-2xl p-8 flex flex-col items-center justify-center text-center hover:bg-slate-50 hover:border-emerald-300 transition-colors cursor-pointer"
-                      onClick={() => fileInputRef.current?.click()}
+                    <input
+                      id="pdf-upload"
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      className="sr-only"
+                      ref={fileInputRef}
+                      disabled={isProcessing}
+                      onChange={(event) => void handleFileUpload(event)}
+                    />
+                    <label
+                      htmlFor="pdf-upload"
+                      aria-disabled={isProcessing}
+                      className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 text-center transition ${
+                        isProcessing
+                          ? 'cursor-wait border-blue-300 bg-blue-50'
+                          : 'cursor-pointer border-slate-200 hover:border-blue-300 hover:bg-slate-50'
+                      }`}
                     >
-                      <input
-                        type="file"
-                        accept=".pdf"
-                        className="hidden"
-                        ref={fileInputRef}
-                        onChange={handleFileUpload}
-                      />
-                      <UploadCloud className="w-10 h-10 text-slate-400 mb-3" />
-                      <p className="text-sm font-semibold text-slate-700">点击上传 PDF</p>
-                      <p className="text-xs text-slate-500 mt-1">扫描版会自动走 OCR，建议先按章处理。</p>
-                    </div>
+                      {isProcessing ? (
+                        <RefreshCw className="mb-3 h-10 w-10 animate-spin text-blue-500" />
+                      ) : (
+                        <UploadCloud className="mb-3 h-10 w-10 text-slate-400" />
+                      )}
+                      <p className="text-sm font-semibold text-slate-700">
+                        {isProcessing
+                          ? progressText(pdfProgress)
+                          : '点击上传 PDF'}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        文本层优先；扫描页按需调用 OCR
+                      </p>
+                    </label>
+
+                    {isProcessing && (
+                      <button
+                        type="button"
+                        onClick={cancelProcessing}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100"
+                      >
+                        <XCircle size={17} /> 取消处理
+                      </button>
+                    )}
 
                     <div className="grid grid-cols-2 gap-3">
-                      <label className="text-xs font-medium text-slate-500 space-y-1">
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
                         起始页
                         <input
-                          value={pageStart}
-                          onChange={(event) => setPageStart(event.target.value)}
-                          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                          type="number"
+                          min="1"
+                          value={settings.pageStart}
+                          onChange={(event) =>
+                            updateSetting('pageStart', event.target.value)
+                          }
+                          className={inputClass}
                         />
                       </label>
-                      <label className="text-xs font-medium text-slate-500 space-y-1">
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
                         结束页
                         <input
-                          value={pageEnd}
-                          onChange={(event) => setPageEnd(event.target.value)}
-                          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                          type="number"
+                          min="1"
+                          value={settings.pageEnd}
+                          onChange={(event) =>
+                            updateSetting('pageEnd', event.target.value)
+                          }
+                          className={inputClass}
                         />
                       </label>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <label className="text-xs font-medium text-slate-500 space-y-1">
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
                         识别方式
                         <select
-                          value={extractMode}
-                          onChange={(event) => setExtractMode(event.target.value as ExtractMode)}
-                          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                          value={settings.extractMode}
+                          onChange={(event) =>
+                            updateSetting(
+                              'extractMode',
+                              event.target.value as AppSettings['extractMode'],
+                            )
+                          }
+                          className={inputClass}
                         >
                           <option value="auto">自动判断</option>
                           <option value="ocr">强制 OCR</option>
-                          <option value="text">仅提取文本</option>
+                          <option value="text">仅文本层</option>
                         </select>
                       </label>
-                      <label className="text-xs font-medium text-slate-500 space-y-1">
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
                         OCR 清晰度
                         <input
-                          value={ocrScale}
-                          onChange={(event) => setOcrScale(event.target.value)}
-                          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                          type="number"
+                          min="1"
+                          max="3"
+                          step="0.1"
+                          value={settings.ocrScale}
+                          onChange={(event) =>
+                            updateSetting('ocrScale', event.target.value)
+                          }
+                          className={inputClass}
                         />
                       </label>
                     </div>
@@ -731,149 +674,323 @@ export default function App() {
                 ) : (
                   <div className="space-y-4">
                     <textarea
-                      className="w-full h-64 p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none"
-                      placeholder={parseMode === 'textbook' ? '粘贴教材正文，系统会生成名词解释/简答/填空卡...' : '粘贴题库文本，要求包含题干、选项、答案、解析...'}
                       value={inputText}
                       onChange={(event) => setInputText(event.target.value)}
+                      className="h-64 w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm outline-none focus:border-transparent focus:ring-2 focus:ring-blue-500"
+                      placeholder={
+                        settings.parseMode === 'textbook'
+                          ? '粘贴教材正文，系统会生成名词解释、简答和填空卡...'
+                          : '粘贴包含题干、选项、答案和解析的题库文本...'
+                      }
                     />
                     <button
-                      onClick={() => processText(inputText)}
+                      type="button"
+                      onClick={processPastedText}
                       disabled={!inputText.trim() || isProcessing}
-                      className="w-full flex items-center justify-center gap-2 bg-slate-950 hover:bg-slate-800 disabled:bg-slate-300 text-white py-3 rounded-xl font-medium transition-colors"
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
-                      {isProcessing ? <RefreshCw className="animate-spin w-5 h-5" /> : <BookOpen className="w-5 h-5" />}
-                      {isProcessing ? '处理中...' : '开始制卡'}
+                      <BookOpen size={18} /> 开始制卡
                     </button>
                   </div>
                 )}
 
-                {parseMode === 'textbook' && (
+                {settings.parseMode === 'textbook' ? (
                   <div className="grid grid-cols-2 gap-3">
-                    <label className="text-xs font-medium text-slate-500 space-y-1">
+                    <label className="space-y-1 text-xs font-medium text-slate-500">
                       每页最多卡片
                       <input
-                        value={maxCardsPerPage}
-                        onChange={(event) => setMaxCardsPerPage(event.target.value)}
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={settings.maxCardsPerPage}
+                        onChange={(event) =>
+                          updateSetting('maxCardsPerPage', event.target.value)
+                        }
+                        className={inputClass}
                       />
                     </label>
-                    <label className="text-xs font-medium text-slate-500 space-y-1">
+                    <label className="space-y-1 text-xs font-medium text-slate-500">
                       答案最长字数
                       <input
-                        value={maxAnswerLength}
-                        onChange={(event) => setMaxAnswerLength(event.target.value)}
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                        type="number"
+                        min="60"
+                        max="1000"
+                        value={settings.maxAnswerLength}
+                        onChange={(event) =>
+                          updateSetting('maxAnswerLength', event.target.value)
+                        }
+                        className={inputClass}
                       />
                     </label>
                   </div>
+                ) : (
+                  <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
+                      <Settings2 size={16} /> 题库解析模板
+                    </summary>
+                    <div className="mt-4 space-y-3">
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
+                        预设
+                        <select
+                          value={
+                            settings.parserTemplate.id ===
+                            GENERAL_PARSER_TEMPLATE.id
+                              ? GENERAL_PARSER_TEMPLATE.id
+                              : settings.parserTemplate.id ===
+                                  DEFAULT_PARSER_TEMPLATE.id
+                                ? DEFAULT_PARSER_TEMPLATE.id
+                                : 'custom'
+                          }
+                          onChange={(event) => {
+                            if (event.target.value !== 'custom') {
+                              selectTemplate(event.target.value);
+                            }
+                          }}
+                          className={inputClass}
+                        >
+                          <option value={DEFAULT_PARSER_TEMPLATE.id}>
+                            刑法母子题
+                          </option>
+                          <option value={GENERAL_PARSER_TEMPLATE.id}>
+                            通用选择题
+                          </option>
+                          <option value="custom">自定义</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
+                        模板名称
+                        <input
+                          value={settings.parserTemplate.name}
+                          onChange={(event) =>
+                            updateTemplate('name', event.target.value)
+                          }
+                          className={inputClass}
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs font-medium text-slate-500">
+                        题号正则
+                        <textarea
+                          value={settings.parserTemplate.questionPattern}
+                          onChange={(event) =>
+                            updateTemplate(
+                              'questionPattern',
+                              event.target.value,
+                            )
+                          }
+                          className={`${inputClass} min-h-20 font-mono`}
+                        />
+                      </label>
+                      {(
+                        [
+                          ['answerLabels', '答案标签'],
+                          ['pointLabels', '考点标签'],
+                          ['analysisLabels', '解析标签'],
+                          ['trailingLabels', '截断标签'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label
+                          key={key}
+                          className="space-y-1 text-xs font-medium text-slate-500"
+                        >
+                          {label}（逗号分隔）
+                          <input
+                            value={settings.parserTemplate[key].join(', ')}
+                            onChange={(event) =>
+                              updateTemplate(key, splitLabels(event.target.value))
+                            }
+                            className={inputClass}
+                          />
+                        </label>
+                      ))}
+                      {templateError && (
+                        <p className="text-xs text-red-600">{templateError}</p>
+                      )}
+                    </div>
+                  </details>
                 )}
 
-                {statusMsg && (
-                  <div className="p-3 bg-emerald-50 text-emerald-700 text-sm rounded-xl flex items-start gap-2">
-                    {isProcessing ? <RefreshCw className="w-5 h-5 flex-shrink-0 mt-0.5 animate-spin" /> : <CheckCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />}
-                    <span>{statusMsg}</span>
+                <label className="space-y-1 text-xs font-medium text-slate-500">
+                  Anki 牌组名称
+                  <input
+                    value={settings.deckName}
+                    onChange={(event) =>
+                      updateSetting('deckName', event.target.value)
+                    }
+                    className={inputClass}
+                  />
+                </label>
+
+                {statusMessage && (
+                  <div
+                    role="status"
+                    className="flex items-start gap-2 rounded-xl bg-blue-50 p-3 text-sm text-blue-700"
+                  >
+                    {isProcessing || isExportingPackage ? (
+                      <RefreshCw className="mt-0.5 h-5 w-5 flex-shrink-0 animate-spin" />
+                    ) : (
+                      <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+                    )}
+                    <span>{statusMessage}</span>
                   </div>
                 )}
-
-                {errorMsg && (
-                  <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl flex items-start gap-2">
-                    <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                    <span>{errorMsg}</span>
+                {errorMessage && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-600"
+                  >
+                    <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+                    <span>{errorMessage}</span>
                   </div>
                 )}
               </div>
             </section>
 
-            <section className="bg-emerald-50/70 p-5 rounded-3xl border border-emerald-100 text-sm text-emerald-900">
-              <h3 className="font-semibold mb-2 flex items-center gap-2">
-                <CheckCircle size={16} /> 使用建议
+            <section className="rounded-3xl border border-blue-100 bg-blue-50/70 p-5 text-sm text-blue-900">
+              <h3 className="mb-2 flex items-center gap-2 font-semibold">
+                <CheckCircle size={16} />
+                {settings.parseMode === 'textbook' ? '使用建议' : '制卡说明'}
               </h3>
-              <ul className="space-y-1.5 list-disc list-inside opacity-90">
-                <li>扫描版教材优先选“强制 OCR”。</li>
-                <li>一次处理 10–30 页更稳，别直接整本 300 页。</li>
-                <li>先预览删改，再导出 Anki TXT。</li>
-                <li>Anki 导入时分隔符选 Tab，并允许 HTML。</li>
-              </ul>
+              {settings.parseMode === 'textbook' ? (
+                <ul className="list-inside list-disc space-y-1.5 opacity-90">
+                  <li>扫描教材优先使用“自动判断”，仅图片页会 OCR。</li>
+                  <li>首次 OCR 会下载中文模型，之后浏览器会缓存。</li>
+                  <li>建议按章处理，并在导出前人工精修。</li>
+                </ul>
+              ) : (
+                <ul className="list-inside list-disc space-y-1.5 opacity-90">
+                  <li>可切换预设或自定义题号、答案和解析标签。</li>
+                  <li>不完整题目会跳过并显示数量。</li>
+                  <li>导出内容自动转义 HTML，避免误执行。</li>
+                </ul>
+              )}
             </section>
+
+            <button
+              type="button"
+              onClick={() => void resetWorkspace()}
+              className="w-full rounded-xl px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+            >
+              清空当前工作区与本地草稿
+            </button>
           </aside>
 
-          <main className="bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col min-h-[820px] overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex flex-col gap-3 md:flex-row md:items-center md:justify-between bg-slate-50/70">
-              <div>
-                <h2 className="font-bold text-slate-900">卡片预览与微调</h2>
-                <p className="text-sm text-slate-500 mt-1">可以直接修改问题、答案、考点和解析，再导出。</p>
+          <main className="flex min-h-[820px] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+            <div className="space-y-3 border-b border-slate-100 bg-slate-50/70 p-5">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="font-bold text-slate-900">卡片预览与精修</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    全字段可编辑；草稿会自动保存在本机浏览器。
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-slate-200 px-3 py-1 text-sm font-semibold text-slate-700">
+                    共 {cards.length} 张
+                  </span>
+                  <button
+                    type="button"
+                    onClick={addBlankCard}
+                    className={buttonSecondary}
+                  >
+                    <Plus size={16} /> 添加卡片
+                  </button>
+                </div>
               </div>
-              <span className="text-sm font-semibold bg-slate-200 text-slate-700 px-3 py-1 rounded-full self-start md:self-auto">
-                共 {cards.length} 张
-              </span>
+
+              {cards.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleAllCards}
+                    className={buttonSecondary}
+                  >
+                    {allSelected ? '取消全选' : '全选'}
+                  </button>
+                  {selectedCount > 0 && (
+                    <>
+                      <span className="text-sm font-medium text-blue-700">
+                        已选 {selectedCount} 张
+                      </span>
+                      <div className="flex min-w-52 flex-1 items-center gap-2">
+                        <input
+                          value={bulkTag}
+                          onChange={(event) => setBulkTag(event.target.value)}
+                          placeholder="批量添加标签"
+                          className={inputClass}
+                        />
+                        <button
+                          type="button"
+                          onClick={applyBulkTag}
+                          disabled={!bulkTag.trim()}
+                          className={buttonSecondary}
+                        >
+                          <Tags size={16} /> 添加
+                        </button>
+                      </div>
+                      <select
+                        value={bulkType}
+                        onChange={(event) => setBulkType(event.target.value)}
+                        className={`${inputClass} w-auto`}
+                      >
+                        <option>选择题</option>
+                        <option>名词解释</option>
+                        <option>简答题</option>
+                        <option>填空题</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={applyBulkType}
+                        className={buttonSecondary}
+                      >
+                        批量改类型
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteCards(selectedIds)}
+                        className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100"
+                      >
+                        <Trash2 size={16} /> 删除所选
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {lastDeletedSnapshot && (
+                <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  <span>卡片已删除。</span>
+                  <button
+                    type="button"
+                    onClick={undoDelete}
+                    className="inline-flex items-center gap-1 font-semibold hover:underline"
+                  >
+                    <RotateCcw size={15} /> 撤销删除
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-4">
               {cards.length === 0 ? (
-                <div className="h-full min-h-[620px] flex flex-col items-center justify-center text-slate-400 text-center px-8">
-                  <FileText className="w-16 h-16 mb-4 opacity-20" />
+                <div className="flex h-full min-h-[620px] flex-col items-center justify-center px-8 text-center text-slate-400">
+                  <FileText className="mb-4 h-16 w-16 opacity-20" />
                   <p className="font-medium text-slate-500">暂无卡片</p>
-                  <p className="text-sm mt-2 max-w-md">上传扫描版教材 PDF 后，系统会先 OCR，再自动抽取定义句、高频考点句和填空句。</p>
+                  <p className="mt-2 max-w-md text-sm">
+                    上传 PDF 或粘贴文本。系统生成草稿后，可在这里修改、批量整理并导出。
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-4">
                   {cards.map((card, index) => (
-                    <article key={card.id} className="group border border-slate-200 rounded-2xl p-5 hover:shadow-md transition-shadow bg-white relative">
-                      <button
-                        onClick={() => removeCard(card.id)}
-                        className="absolute top-4 right-4 text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="删除此卡片"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-
-                      <div className="flex flex-wrap items-center gap-2 mb-4 pr-8">
-                        <span className="inline-flex bg-slate-950 text-white text-xs font-bold px-2.5 py-1 rounded-full">{index + 1}</span>
-                        <span className="inline-flex bg-emerald-100 text-emerald-800 text-xs font-bold px-2.5 py-1 rounded-full">{card.type}</span>
-                        {card.sourcePage && <span className="inline-flex bg-slate-100 text-slate-600 text-xs font-medium px-2.5 py-1 rounded-full">PDF 第 {card.sourcePage} 页</span>}
-                        {card.chapter && <span className="inline-flex bg-slate-100 text-slate-600 text-xs font-medium px-2.5 py-1 rounded-full">{card.chapter}</span>}
-                      </div>
-
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        <label className="space-y-2">
-                          <span className="text-xs font-semibold text-slate-500">问题</span>
-                          <textarea
-                            value={card.question}
-                            onChange={(event) => updateCard(card.id, 'question', event.target.value)}
-                            className="w-full min-h-24 rounded-2xl bg-slate-50 border border-slate-200 p-3 text-sm text-slate-900 leading-relaxed outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
-                          />
-                        </label>
-                        <label className="space-y-2">
-                          <span className="text-xs font-semibold text-slate-500">答案</span>
-                          <textarea
-                            value={card.answer}
-                            onChange={(event) => updateCard(card.id, 'answer', event.target.value)}
-                            className="w-full min-h-24 rounded-2xl bg-slate-50 border border-slate-200 p-3 text-sm text-slate-900 leading-relaxed outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
-                          />
-                        </label>
-                      </div>
-
-                      {(card.point || card.analysis) && (
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-                          <label className="space-y-2">
-                            <span className="text-xs font-semibold text-slate-500">考点</span>
-                            <input
-                              value={card.point}
-                              onChange={(event) => updateCard(card.id, 'point', event.target.value)}
-                              className="w-full rounded-xl bg-slate-50 border border-slate-200 p-3 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-emerald-500"
-                            />
-                          </label>
-                          <label className="space-y-2">
-                            <span className="text-xs font-semibold text-slate-500">解析/来源说明</span>
-                            <input
-                              value={card.analysis}
-                              onChange={(event) => updateCard(card.id, 'analysis', event.target.value)}
-                              className="w-full rounded-xl bg-slate-50 border border-slate-200 p-3 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-emerald-500"
-                            />
-                          </label>
-                        </div>
-                      )}
-                    </article>
+                    <CardEditor
+                      key={card.id}
+                      card={card}
+                      index={index}
+                      selected={selectedIds.has(card.id)}
+                      onToggle={toggleCard}
+                      onDelete={(id) => deleteCards(new Set([id]))}
+                      onUpdate={updateCard}
+                    />
                   ))}
                 </div>
               )}

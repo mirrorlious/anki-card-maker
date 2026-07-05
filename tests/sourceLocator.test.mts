@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   attachSourceLocations,
   locateQuoteRegions,
+  textInsideSourceRect,
 } from '../src/sourceLocator.ts';
 import { createCard } from '../src/parser.ts';
 
@@ -74,4 +75,37 @@ test('attaches locations only to cards with verified page evidence', () => {
   );
 
   assert.equal(located.sourceRects?.length, 1);
+});
+
+test('collects OCR lines covered by a manual source selection', () => {
+  const text = textInsideSourceRect(
+    { x: 0.08, y: 0.18, width: 0.8, height: 0.14 },
+    [
+      {
+        text: '同源染色体是形态和结构相同的一对染色体。',
+        x: 0.1,
+        y: 0.2,
+        width: 0.72,
+        height: 0.04,
+      },
+      {
+        text: '它们所含的基因位点也相同。',
+        x: 0.1,
+        y: 0.26,
+        width: 0.58,
+        height: 0.04,
+      },
+      {
+        text: '页面其他内容。',
+        x: 0.1,
+        y: 0.5,
+        width: 0.3,
+        height: 0.04,
+      },
+    ],
+  );
+
+  assert.match(text, /同源染色体/);
+  assert.match(text, /基因位点/);
+  assert.doesNotMatch(text, /其他内容/);
 });

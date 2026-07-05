@@ -8,6 +8,7 @@ import {
 import {
   useEffect,
   useId,
+  useCallback,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -63,6 +64,8 @@ export function PdfReader({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef<Point | null>(null);
+  const onSelectRectRef = useRef(onSelectRect);
+  const selectionModeRef = useRef(selectionMode);
   const maskId = useId().replace(/:/g, '');
 
   useEffect(() => {
@@ -145,18 +148,65 @@ export function PdfReader({
     };
   }, [document, pageNumber, zoom]);
 
-  const pointFromEvent = (event: ReactPointerEvent): Point => {
+  const pointFromClient = useCallback((clientX: number, clientY: number): Point => {
     const bounds = overlayRef.current?.getBoundingClientRect();
     if (!bounds) return { x: 0, y: 0 };
     return {
-      x: clamp((event.clientX - bounds.left) / bounds.width, 0, 1),
-      y: clamp((event.clientY - bounds.top) / bounds.height, 0, 1),
+      x: clamp((clientX - bounds.left) / bounds.width, 0, 1),
+      y: clamp((clientY - bounds.top) / bounds.height, 0, 1),
     };
-  };
+  }, []);
+
+  useEffect(() => {
+    const moveSelection = (event: PointerEvent) => {
+      if (!selectionModeRef.current || !dragStartRef.current) return;
+      event.preventDefault();
+      setDraftRect(
+        rectFromPoints(
+          dragStartRef.current,
+          pointFromClient(event.clientX, event.clientY),
+        ),
+      );
+    };
+    const finishSelection = (event: PointerEvent) => {
+      if (!selectionModeRef.current || !dragStartRef.current) return;
+      const rect = rectFromPoints(
+        dragStartRef.current,
+        pointFromClient(event.clientX, event.clientY),
+      );
+      dragStartRef.current = null;
+      setDraftRect(null);
+      if (rect.width >= 0.01 && rect.height >= 0.01) {
+        onSelectRectRef.current(rect);
+      }
+    };
+    const cancelSelection = () => {
+      dragStartRef.current = null;
+      setDraftRect(null);
+    };
+    window.addEventListener('pointermove', moveSelection, { passive: false });
+    window.addEventListener('pointerup', finishSelection);
+    window.addEventListener('pointercancel', cancelSelection);
+    return () => {
+      window.removeEventListener('pointermove', moveSelection);
+      window.removeEventListener('pointerup', finishSelection);
+      window.removeEventListener('pointercancel', cancelSelection);
+    };
+  }, [pointFromClient]);
+
+  useEffect(() => {
+    selectionModeRef.current = selectionMode;
+    if (!selectionMode) dragStartRef.current = null;
+  }, [selectionMode]);
+
+  useEffect(() => {
+    onSelectRectRef.current = onSelectRect;
+  }, [onSelectRect]);
 
   const startSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!selectionMode) return;
-    const point = pointFromEvent(event);
+    event.preventDefault();
+    const point = pointFromClient(event.clientX, event.clientY);
     dragStartRef.current = point;
     setDraftRect({ x: point.x, y: point.y, width: 0, height: 0 });
     try {
@@ -164,22 +214,6 @@ export function PdfReader({
     } catch {
       // Pointer capture is an enhancement; the drag still works inside the page.
     }
-  };
-
-  const moveSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!selectionMode || !dragStartRef.current) return;
-    setDraftRect(rectFromPoints(dragStartRef.current, pointFromEvent(event)));
-  };
-
-  const finishSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!selectionMode || !dragStartRef.current) return;
-    const rect = rectFromPoints(
-      dragStartRef.current,
-      pointFromEvent(event),
-    );
-    dragStartRef.current = null;
-    setDraftRect(null);
-    if (rect.width >= 0.01 && rect.height >= 0.01) onSelectRect(rect);
   };
 
   const visibleDraftRect = selectionMode ? draftRect : null;
@@ -285,9 +319,12 @@ export function PdfReader({
               selectionMode ? 'cursor-crosshair' : 'pointer-events-none'
             }`}
             onPointerDown={startSelection}
-            onPointerMove={moveSelection}
-            onPointerUp={finishSelection}
           >
+            {selectionMode && (
+              <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-blue-600/95 px-4 py-2 text-xs font-semibold text-white shadow-lg">
+                按住拖动框选原文，松开后自动保存
+              </div>
+            )}
             {focusMode && sourceRects.length > 0 && (
               <svg
                 className="pointer-events-none absolute inset-0 h-full w-full"

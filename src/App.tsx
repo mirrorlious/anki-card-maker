@@ -42,7 +42,10 @@ import {
   parseExamCards,
   validateParserTemplate,
 } from './parser';
-import { attachSourceLocations } from './sourceLocator';
+import {
+  attachSourceLocations,
+  textInsideSourceRect,
+} from './sourceLocator';
 import { clearDraft, loadDraft, saveDraft } from './storage';
 import type {
   AppSettings,
@@ -550,6 +553,10 @@ export default function App() {
 
   const selectSourceRect = (rect: PdfSourceRect): void => {
     if (!sourceCardId) return;
+    const sourceText = textInsideSourceRect(
+      rect,
+      pdfSourcePages.find((page) => page.page === previewPage)?.regions ?? [],
+    );
     setCards((current) =>
       current.map((card) =>
         card.id === sourceCardId
@@ -557,12 +564,34 @@ export default function App() {
               ...card,
               sourcePage: previewPage,
               sourceRects: [rect],
+              sourceQuote: sourceText || card.sourceQuote,
             }
           : card,
       ),
     );
     setIsSelectingSource(false);
-    setStatusMessage(`已将当前框选设为 PDF 第 ${previewPage} 页的原文依据。`);
+    setStatusMessage(
+      sourceText
+        ? `框选已保存：已关联 PDF 第 ${previewPage} 页内的 OCR 原文。`
+        : `框选已保存：已将该区域设为 PDF 第 ${previewPage} 页的原文依据。`,
+    );
+  };
+
+  const toggleSourceSelection = (): void => {
+    const next = !isSelectingSource;
+    setIsSelectingSource(next);
+    setStatusMessage(
+      next
+        ? '框选模式已开启：在 PDF 上按住拖动，松开后自动保存。'
+        : '已取消框选。',
+    );
+  };
+
+  const replaceAnswerWithSourceQuote = (): void => {
+    const card = cards.find((candidate) => candidate.id === sourceCardId);
+    if (!card?.sourceQuote) return;
+    updateCard(card.id, 'answer', card.sourceQuote);
+    setStatusMessage('已用当前框选的原文替换答案。');
   };
 
   const clearSourceRects = (): void => {
@@ -1683,6 +1712,15 @@ export default function App() {
                           <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-line text-xs leading-relaxed text-blue-900">
                             {sourceCard.sourceQuote}
                           </p>
+                          {sourceCard.sourceRects?.length ? (
+                            <button
+                              type="button"
+                              onClick={replaceAnswerWithSourceQuote}
+                              className="mt-2 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-blue-700 shadow-sm transition hover:bg-blue-100"
+                            >
+                              用框选原文替换答案
+                            </button>
+                          ) : null}
                         </div>
                       )}
 
@@ -1698,9 +1736,7 @@ export default function App() {
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            setIsSelectingSource((current) => !current)
-                          }
+                          onClick={toggleSourceSelection}
                           className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
                             isSelectingSource
                               ? 'border-blue-500 bg-blue-50 text-blue-700'
@@ -1708,20 +1744,29 @@ export default function App() {
                           }`}
                         >
                           <MousePointer2 size={15} />
-                          {isSelectingSource ? '取消框选' : '重新框选'}
+                          {isSelectingSource ? '取消框选' : '重新框选来源'}
                         </button>
                       </div>
-                      {sourceCard.sourceRects?.length ? (
+                      {isSelectingSource ? (
+                        <p className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-relaxed text-blue-700">
+                          请在 PDF 页面上按住并拖动，松开后自动保存。即使鼠标移出页面再松开也可以。框选会更新来源和引用原文，但不会自动覆盖问题或答案。
+                        </p>
+                      ) : sourceCard.sourceRects?.length ? (
+                        <div className="mt-3">
+                          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs leading-relaxed text-emerald-700">
+                            原文位置已保存。橙色区域是当前卡片依据；需要改写答案时，可点击上方“用框选原文替换答案”。
+                          </p>
                         <button
                           type="button"
                           onClick={clearSourceRects}
-                          className="mt-2 w-full rounded-lg px-3 py-2 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                            className="mt-1 w-full rounded-lg px-3 py-2 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-red-600"
                         >
                           清除精确定位
                         </button>
+                        </div>
                       ) : (
                         <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
-                          暂未找到精确坐标。已跳到来源页，你可以点击“重新框选”，在页面上拖出原文区域。
+                          暂未找到精确坐标。已跳到来源页，你可以点击“重新框选来源”，在页面上拖出原文区域。
                         </p>
                       )}
                     </section>

@@ -147,12 +147,15 @@ test('keeps extracted PDF text when strict textbook rules generate no cards', as
   );
   await page.mouse.down();
   await page.mouse.move(
-    bounds!.x + bounds!.width * 0.7,
+    bounds!.x + bounds!.width + 40,
     endY,
   );
   await page.mouse.up();
   await expect(page.getByText('已精确定位')).toBeVisible();
   await expect(page.getByText('来源第 1 页')).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: '重新框选来源' }),
+  ).toBeVisible();
 
   await page.locator('main aside textarea').first().fill('校订后的问题');
   await page.getByRole('button', { name: '卡片', exact: true }).click();

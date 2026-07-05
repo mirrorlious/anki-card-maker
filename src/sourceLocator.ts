@@ -33,6 +33,47 @@ function compactRects(regions: SourceTextRegion[]): PdfSourceRect[] {
     }));
 }
 
+function intersectionArea(
+  left: PdfSourceRect,
+  right: PdfSourceRect,
+): number {
+  const width =
+    Math.min(left.x + left.width, right.x + right.width) -
+    Math.max(left.x, right.x);
+  const height =
+    Math.min(left.y + left.height, right.y + right.height) -
+    Math.max(left.y, right.y);
+  return Math.max(0, width) * Math.max(0, height);
+}
+
+export function textInsideSourceRect(
+  rect: PdfSourceRect,
+  regions: SourceTextRegion[],
+): string {
+  return regions
+    .filter((region) => {
+      const overlap = intersectionArea(rect, region);
+      const regionArea = region.width * region.height;
+      const centerX = region.x + region.width / 2;
+      const centerY = region.y + region.height / 2;
+      return (
+        (centerX >= rect.x &&
+          centerX <= rect.x + rect.width &&
+          centerY >= rect.y &&
+          centerY <= rect.y + rect.height) ||
+        (regionArea > 0 && overlap / regionArea >= 0.18)
+      );
+    })
+    .sort((left, right) =>
+      Math.abs(left.y - right.y) < 0.012
+        ? left.x - right.x
+        : left.y - right.y,
+    )
+    .map((region) => region.text.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function locateQuoteRegions(
   quote: string,
   regions: SourceTextRegion[],

@@ -11,6 +11,7 @@ import {
   RotateCcw,
   ScanText,
   Settings2,
+  Sparkles,
   Tags,
   Trash2,
   UploadCloud,
@@ -38,6 +39,8 @@ import {
 import { clearDraft, loadDraft, saveDraft } from './storage';
 import type {
   AppSettings,
+  AiProgress,
+  AiSettings,
   Card,
   DraftData,
   ExtractedPage,
@@ -56,6 +59,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   maxAnswerLength: '220',
   deckName: 'Anki 教材与题库卡片',
   parserTemplate: DEFAULT_PARSER_TEMPLATE,
+  ai: {
+    provider: 'deepseek',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-v4-flash',
+    jsonMode: true,
+    chunkSize: '8000',
+    maxChunks: '8',
+    cardsPerChunk: '8',
+    customInstructions: '',
+  },
 };
 
 const buttonSecondary =
@@ -81,6 +94,10 @@ function normalizeDraftSettings(settings: AppSettings): AppSettings {
       ...cloneTemplate(DEFAULT_PARSER_TEMPLATE),
       ...settings.parserTemplate,
     },
+    ai: {
+      ...DEFAULT_SETTINGS.ai,
+      ...settings.ai,
+    },
   };
 }
 
@@ -105,6 +122,12 @@ function splitLabels(value: string): string[] {
     .filter(Boolean);
 }
 
+function cardIdentity(card: Card): string {
+  return `${card.question.replace(/\s+/g, '').toLowerCase()}|${card.answer
+    .replace(/\s+/g, '')
+    .toLowerCase()}`;
+}
+
 export default function App() {
   const [inputText, setInputText] = useState('');
   const [cards, setCards] = useState<Card[]>([]);
@@ -118,11 +141,16 @@ export default function App() {
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExportingPackage, setIsExportingPackage] = useState(false);
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [isTestingAi, setIsTestingAi] = useState(false);
+  const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+  const [apiKey, setApiKey] = useState('');
   const [draftReady, setDraftReady] = useState(false);
   const [bulkTag, setBulkTag] = useState('');
   const [bulkType, setBulkType] = useState('简答题');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const aiAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -130,7 +158,13 @@ export default function App() {
       .then((draft) => {
         if (!active || !draft || draft.version !== 1) return;
         setInputText(draft.inputText);
-        setCards(draft.cards);
+        setCards(
+          draft.cards.map((card) => ({
+            ...card,
+            origin: card.origin ?? 'local',
+            reviewStatus: card.reviewStatus ?? 'approved',
+          })),
+        );
         setSettings(normalizeDraftSettings(draft.settings));
         setStatusMessage(
           `已恢复 ${new Date(draft.savedAt).toLocaleString()} 的草稿。`,
@@ -145,6 +179,7 @@ export default function App() {
     return () => {
       active = false;
       abortControllerRef.current?.abort();
+      aiAbortControllerRef.current?.abort();
     };
   }, []);
 
@@ -181,6 +216,16 @@ export default function App() {
         id: 'custom',
         [key]: value,
       },
+    }));
+  };
+
+  const updateAiSetting = <K extends keyof AiSettings>(
+    key: K,
+    value: AiSettings[K],
+  ) => {
+    setSettings((current) => ({
+      ...current,
+      ai: { ...current.ai, [key]: value },
     }));
   };
 
@@ -302,6 +347,113 @@ export default function App() {
     abortControllerRef.current?.abort();
   };
 
+  const selectAiProvider = (provider: AiSettings['provider']): void => {
+    setSettings((current) => {
+      const preset =
+        provider === 'deepseek'
+          ? {
+              baseUrl: 'https://api.deepseek.com',
+              model: 'deepseek-v4-flash',
+              jsonMode: true,
+            }
+          : provider === 'ollama'
+            ? {
+                baseUrl: 'http://localhost:11434/v1',
+                model: 'qwen3:8b',
+                jsonMode: true,
+              }
+            : {
+                baseUrl: current.ai.baseUrl,
+                model: current.ai.model,
+                jsonMode: current.ai.jsonMode,
+              };
+      return {
+        ...current,
+        ai: { ...current.ai, provider, ...preset },
+      };
+    });
+  };
+
+  const testConnection = async (): Promise<void> => {
+    if (isTestingAi || isAiProcessing) return;
+    const controller = new AbortController();
+    aiAbortControllerRef.current = controller;
+    setIsTestingAi(true);
+    setErrorMessage('');
+    setStatusMessage('正在测试 AI 接口...');
+    try {
+      const { testAiConnection } = await import('./ai');
+      const model = await testAiConnection(
+        { ...settings.ai, apiKey },
+        controller.signal,
+      );
+      setStatusMessage(`AI 接口连接成功，响应模型：${model}`);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        setStatusMessage('AI 连接测试已取消。');
+      } else {
+        setErrorMessage(`AI 连接失败：${(error as Error).message}`);
+        setStatusMessage('');
+      }
+    } finally {
+      aiAbortControllerRef.current = null;
+      setIsTestingAi(false);
+    }
+  };
+
+  const generateAiCandidates = async (): Promise<void> => {
+    if (!inputText.trim() || isAiProcessing || isTestingAi) return;
+    const controller = new AbortController();
+    aiAbortControllerRef.current = controller;
+    setIsAiProcessing(true);
+    setAiProgress(null);
+    setErrorMessage('');
+    setStatusMessage('AI 正在分析原文并生成候选卡...');
+
+    try {
+      const { generateCardsWithAi } = await import('./ai');
+      const result = await generateCardsWithAi(
+        inputText,
+        { ...settings.ai, apiKey },
+        {
+          signal: controller.signal,
+          onProgress: setAiProgress,
+        },
+      );
+      const existing = new Set(cards.map(cardIdentity));
+      const uniqueCandidates = result.cards.filter((card) => {
+        const key = cardIdentity(card);
+        if (existing.has(key)) return false;
+        existing.add(key);
+        return true;
+      });
+      setCards((current) => [...uniqueCandidates, ...current]);
+      setSelectedIds(new Set());
+      const tokenText =
+        result.usage.promptTokens || result.usage.completionTokens
+          ? `，使用 ${result.usage.promptTokens} 输入 / ${result.usage.completionTokens} 输出 tokens`
+          : '';
+      setStatusMessage(
+        `AI 生成 ${uniqueCandidates.length} 张不重复候选卡，跳过 ${result.skippedChunks} 个异常文本块${tokenText}。请审核后批准。`,
+      );
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        setStatusMessage('已取消 AI 制卡，现有卡片未受影响。');
+      } else {
+        setErrorMessage(`AI 制卡失败：${(error as Error).message}`);
+        setStatusMessage('');
+      }
+    } finally {
+      aiAbortControllerRef.current = null;
+      setAiProgress(null);
+      setIsAiProcessing(false);
+    }
+  };
+
+  const cancelAiProcessing = (): void => {
+    aiAbortControllerRef.current?.abort();
+  };
+
   const updateCard = (
     id: string,
     field: EditableCardField,
@@ -332,6 +484,27 @@ export default function App() {
     setCards(lastDeletedSnapshot);
     setLastDeletedSnapshot(null);
     setStatusMessage('已撤销删除。');
+  };
+
+  const approveCard = (id: string): void => {
+    setCards((current) =>
+      current.map((card) =>
+        card.id === id ? { ...card, reviewStatus: 'approved' } : card,
+      ),
+    );
+    setStatusMessage('AI 候选卡已批准，可随其他卡片一起导出。');
+  };
+
+  const approveSelected = (): void => {
+    if (!selectedIds.size) return;
+    setCards((current) =>
+      current.map((card) =>
+        selectedIds.has(card.id)
+          ? { ...card, reviewStatus: 'approved' }
+          : card,
+      ),
+    );
+    setStatusMessage(`已批准所选 ${selectedIds.size} 张卡片。`);
   };
 
   const toggleCard = (id: string): void => {
@@ -387,6 +560,7 @@ export default function App() {
       type: settings.parseMode === 'exam' ? '选择题' : '简答题',
       chapter: '',
       tags: ['手动添加'],
+      origin: 'manual',
     });
     setLastDeletedSnapshot(null);
     setCards((current) => [card, ...current]);
@@ -394,35 +568,39 @@ export default function App() {
   };
 
   const exportText = (): void => {
-    if (!cards.length) return;
+    if (!exportableCards.length) return;
     downloadBlob(
-      new Blob([buildAnkiText(cards)], { type: 'text/plain;charset=utf-8' }),
-      exportFileName(settings.deckName, cards.length, 'txt'),
+      new Blob([buildAnkiText(exportableCards)], {
+        type: 'text/plain;charset=utf-8',
+      }),
+      exportFileName(settings.deckName, exportableCards.length, 'txt'),
     );
   };
 
   const exportJson = (): void => {
-    if (!cards.length) return;
+    if (!exportableCards.length) return;
     downloadBlob(
-      new Blob([buildCardsJson(cards)], {
+      new Blob([buildCardsJson(exportableCards)], {
         type: 'application/json;charset=utf-8',
       }),
-      exportFileName(settings.deckName, cards.length, 'json'),
+      exportFileName(settings.deckName, exportableCards.length, 'json'),
     );
   };
 
   const exportPackage = async (): Promise<void> => {
-    if (!cards.length || isExportingPackage) return;
+    if (!exportableCards.length || isExportingPackage) return;
     setIsExportingPackage(true);
     setErrorMessage('');
     setStatusMessage('正在生成 Anki .apkg 包...');
     try {
-      const blob = await buildAnkiPackage(cards, settings.deckName);
+      const blob = await buildAnkiPackage(exportableCards, settings.deckName);
       downloadBlob(
         blob,
-        exportFileName(settings.deckName, cards.length, 'apkg'),
+        exportFileName(settings.deckName, exportableCards.length, 'apkg'),
       );
-      setStatusMessage(`已生成包含 ${cards.length} 张卡片的 .apkg。`);
+      setStatusMessage(
+        `已生成包含 ${exportableCards.length} 张已审核卡片的 .apkg。`,
+      );
     } catch (error) {
       setErrorMessage(`Anki 包生成失败：${(error as Error).message}`);
       setStatusMessage('');
@@ -438,12 +616,15 @@ export default function App() {
     ) {
       return;
     }
+    aiAbortControllerRef.current?.abort();
     await clearDraft();
     setCards([]);
     setInputText('');
     setSettings(DEFAULT_SETTINGS);
     setSelectedIds(new Set());
     setLastDeletedSnapshot(null);
+    setApiKey('');
+    setAiProgress(null);
     setErrorMessage('');
     setStatusMessage('工作区已清空。');
   };
@@ -457,7 +638,15 @@ export default function App() {
   };
 
   const templateError = validateParserTemplate(settings.parserTemplate);
+  const exportableCards = cards.filter(
+    (card) => card.reviewStatus === 'approved',
+  );
+  const pendingCount = cards.length - exportableCards.length;
   const selectedCount = selectedIds.size;
+  const selectedPendingCount = cards.filter(
+    (card) =>
+      selectedIds.has(card.id) && card.reviewStatus === 'pending',
+  ).length;
   const allSelected = cards.length > 0 && selectedCount === cards.length;
 
   return (
@@ -483,7 +672,7 @@ export default function App() {
             <button
               type="button"
               onClick={exportJson}
-              disabled={!cards.length}
+              disabled={!exportableCards.length}
               className={buttonSecondary}
             >
               <FileJson size={17} /> JSON
@@ -491,7 +680,7 @@ export default function App() {
             <button
               type="button"
               onClick={exportText}
-              disabled={!cards.length}
+              disabled={!exportableCards.length}
               className={buttonSecondary}
             >
               <FileText size={17} /> Anki TXT
@@ -499,7 +688,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => void exportPackage()}
-              disabled={!cards.length || isExportingPackage}
+              disabled={!exportableCards.length || isExportingPackage}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {isExportingPackage ? (
@@ -567,6 +756,192 @@ export default function App() {
                     题库解析卡
                   </button>
                 </div>
+
+                <details className="rounded-2xl border border-violet-200 bg-violet-50/50 p-4">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-violet-800">
+                    <Sparkles size={16} /> AI 辅助生成候选卡
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    <p className="text-xs leading-relaxed text-violet-700">
+                      AI 在 PDF/OCR
+                      提取之后介入：拆分知识点、生成卡片并补充标签。结果默认标记为待审核，不会覆盖现有卡片。
+                    </p>
+                    <label className="space-y-1 text-xs font-medium text-slate-500">
+                      接口预设
+                      <select
+                        value={settings.ai.provider}
+                        onChange={(event) =>
+                          selectAiProvider(
+                            event.target.value as AiSettings['provider'],
+                          )
+                        }
+                        className={inputClass}
+                      >
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="ollama">本地 Ollama</option>
+                        <option value="custom">
+                          自定义 OpenAI-compatible
+                        </option>
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-500">
+                      Base URL
+                      <input
+                        value={settings.ai.baseUrl}
+                        onChange={(event) =>
+                          updateAiSetting('baseUrl', event.target.value)
+                        }
+                        placeholder="https://api.example.com/v1"
+                        className={inputClass}
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-500">
+                      模型
+                      <input
+                        value={settings.ai.model}
+                        onChange={(event) =>
+                          updateAiSetting('model', event.target.value)
+                        }
+                        placeholder="模型名称"
+                        className={inputClass}
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-500">
+                      API Key（仅保存在当前页面会话）
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={apiKey}
+                        onChange={(event) => setApiKey(event.target.value)}
+                        placeholder={
+                          settings.ai.provider === 'ollama'
+                            ? '本地接口通常可留空'
+                            : 'sk-...'
+                        }
+                        className={inputClass}
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void testConnection()}
+                        disabled={isTestingAi || isAiProcessing}
+                        className={buttonSecondary}
+                      >
+                        {isTestingAi ? (
+                          <RefreshCw size={16} className="animate-spin" />
+                        ) : (
+                          <CheckCircle size={16} />
+                        )}
+                        测试连接
+                      </button>
+                      {isAiProcessing ? (
+                        <button
+                          type="button"
+                          onClick={cancelAiProcessing}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100"
+                        >
+                          <XCircle size={16} /> 取消 AI
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void generateAiCandidates()}
+                          disabled={
+                            !inputText.trim() ||
+                            !settings.ai.model.trim() ||
+                            isTestingAi
+                          }
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          <Sparkles size={16} /> 生成候选卡
+                        </button>
+                      )}
+                    </div>
+
+                    {aiProgress && (
+                      <div className="rounded-xl bg-white px-3 py-2 text-xs text-violet-700">
+                        {aiProgress.detail}（{aiProgress.completed}/
+                        {aiProgress.total}）
+                      </div>
+                    )}
+
+                    <details className="rounded-xl border border-violet-100 bg-white p-3">
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-600">
+                        AI 调用范围与高级设置
+                      </summary>
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <label className="space-y-1 text-xs text-slate-500">
+                          每块字符数
+                          <input
+                            type="number"
+                            min="1000"
+                            max="30000"
+                            value={settings.ai.chunkSize}
+                            onChange={(event) =>
+                              updateAiSetting('chunkSize', event.target.value)
+                            }
+                            className={inputClass}
+                          />
+                        </label>
+                        <label className="space-y-1 text-xs text-slate-500">
+                          最多文本块
+                          <input
+                            type="number"
+                            min="1"
+                            max="50"
+                            value={settings.ai.maxChunks}
+                            onChange={(event) =>
+                              updateAiSetting('maxChunks', event.target.value)
+                            }
+                            className={inputClass}
+                          />
+                        </label>
+                        <label className="space-y-1 text-xs text-slate-500">
+                          每块最多卡片
+                          <input
+                            type="number"
+                            min="1"
+                            max="30"
+                            value={settings.ai.cardsPerChunk}
+                            onChange={(event) =>
+                              updateAiSetting(
+                                'cardsPerChunk',
+                                event.target.value,
+                              )
+                            }
+                            className={inputClass}
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 self-end rounded-xl border border-slate-200 px-3 py-2.5 text-xs text-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={settings.ai.jsonMode}
+                            onChange={(event) =>
+                              updateAiSetting('jsonMode', event.target.checked)
+                            }
+                          />
+                          请求 JSON 模式
+                        </label>
+                      </div>
+                      <label className="mt-3 block space-y-1 text-xs text-slate-500">
+                        补充制卡要求
+                        <textarea
+                          value={settings.ai.customInstructions}
+                          onChange={(event) =>
+                            updateAiSetting(
+                              'customInstructions',
+                              event.target.value,
+                            )
+                          }
+                          placeholder="例如：优先生成罪名辨析卡；答案不超过 100 字。"
+                          className={`${inputClass} min-h-20 resize-y`}
+                        />
+                      </label>
+                    </details>
+                  </div>
+                </details>
 
                 {settings.activeTab === 'upload' ? (
                   <div className="space-y-4">
@@ -825,7 +1200,10 @@ export default function App() {
                     role="status"
                     className="flex items-start gap-2 rounded-xl bg-blue-50 p-3 text-sm text-blue-700"
                   >
-                    {isProcessing || isExportingPackage ? (
+                    {isProcessing ||
+                    isExportingPackage ||
+                    isAiProcessing ||
+                    isTestingAi ? (
                       <RefreshCw className="mt-0.5 h-5 w-5 flex-shrink-0 animate-spin" />
                     ) : (
                       <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
@@ -886,6 +1264,7 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full bg-slate-200 px-3 py-1 text-sm font-semibold text-slate-700">
                     共 {cards.length} 张
+                    {pendingCount > 0 ? ` · 待审核 ${pendingCount}` : ''}
                   </span>
                   <button
                     type="button"
@@ -911,6 +1290,15 @@ export default function App() {
                       <span className="text-sm font-medium text-blue-700">
                         已选 {selectedCount} 张
                       </span>
+                      {selectedPendingCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={approveSelected}
+                          className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm font-semibold text-amber-700 hover:bg-amber-100"
+                        >
+                          <CheckCircle size={16} /> 批准所选
+                        </button>
+                      )}
                       <div className="flex min-w-52 flex-1 items-center gap-2">
                         <input
                           value={bulkTag}
@@ -989,6 +1377,7 @@ export default function App() {
                       selected={selectedIds.has(card.id)}
                       onToggle={toggleCard}
                       onDelete={(id) => deleteCards(new Set([id]))}
+                      onApprove={approveCard}
                       onUpdate={updateCard}
                     />
                   ))}

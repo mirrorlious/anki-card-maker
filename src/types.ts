@@ -2,6 +2,8 @@ export type ActiveTab = 'upload' | 'text';
 export type ParseMode = 'textbook' | 'exam';
 export type ExtractMode = 'auto' | 'text' | 'ocr';
 export type ExtractMethod = 'text' | 'ocr';
+export type CardOrigin = 'local' | 'ai' | 'manual';
+export type ReviewStatus = 'pending' | 'approved';
 
 export interface Card {
   id: string;
@@ -14,6 +16,10 @@ export interface Card {
   chapter: string;
   sourcePage?: number;
   tags: string[];
+  origin: CardOrigin;
+  reviewStatus: ReviewStatus;
+  sourceQuote?: string;
+  confidence?: number;
 }
 
 export interface ExtractedPage {
@@ -50,6 +56,18 @@ export interface AppSettings {
   maxAnswerLength: string;
   deckName: string;
   parserTemplate: ParserTemplate;
+  ai: AiSettings;
+}
+
+export interface AiSettings {
+  provider: 'deepseek' | 'custom' | 'ollama';
+  baseUrl: string;
+  model: string;
+  jsonMode: boolean;
+  chunkSize: string;
+  maxChunks: string;
+  cardsPerChunk: string;
+  customInstructions: string;
 }
 
 export interface DraftData {
@@ -71,4 +89,22 @@ export interface ParseResult {
   cards: Card[];
   candidateCount: number;
   skippedCount: number;
+}
+
+export interface AiUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface AiGenerationResult {
+  cards: Card[];
+  usage: AiUsage;
+  processedChunks: number;
+  skippedChunks: number;
+}
+
+export interface AiProgress {
+  completed: number;
+  total: number;
+  detail: string;
 }

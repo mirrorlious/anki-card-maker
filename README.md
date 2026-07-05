@@ -11,6 +11,7 @@
 - **草稿恢复**：卡片、原文和设置自动保存在浏览器 IndexedDB 中。
 - **安全导出**：原文 HTML 会被转义，可导出 Anki TXT、JSON 和现代 `.apkg` 牌组。
 - **本地依赖**：PDF.js、OCR worker、SQLite WASM 均随应用构建，不再动态加载第三方脚本。
+- **可选 AI 辅助**：支持 DeepSeek、本地 Ollama 与自定义 OpenAI-compatible API，生成结果必须审核后才能导出。
 
 > OCR 首次使用仍需下载所选语言模型，浏览器随后会缓存模型。纯文本 PDF 和题库粘贴不需要 OCR。
 
@@ -42,6 +43,21 @@ npm run dev
 
 无效正则会在界面直接提示，不会启动解析。
 
+## AI 辅助制卡
+
+AI 位于“PDF/OCR 已完成文本提取”与“人工审核”之间，适合：
+
+- 将长段落拆成原子知识点；
+- 生成名词解释、简答、填空、辨析和案例候选卡；
+- 补充章节、标签与逐字原文依据；
+- 对同一段内容生成多个不同角度的问题。
+
+DeepSeek 预设使用其 OpenAI-compatible Chat Completions 接口；也可填写任意兼容接口的 Base URL 和模型。API Key 只保存在当前页面内存中，不写入 IndexedDB 草稿、导出文件或日志。AI 卡片统一标记为“待审核”，批准前不会进入 TXT、JSON 或 `.apkg`。
+
+为控制费用，用户可设置每个文本块的字符数、最多处理块数和每块最多卡片数。接口返回内容还会经过本地 JSON 校验、去重与原文引用核验。
+
+[DeepSeek API 文档](https://api-docs.deepseek.com/zh-cn/) · [DeepSeek JSON Output](https://api-docs.deepseek.com/zh-cn/guides/json_mode)
+
 ## 质量检查
 
 ```bash
@@ -57,7 +73,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-测试覆盖题库兼容性、教材卡生成、HTML 安全、编辑与批量操作、撤销删除、草稿恢复、PDF worker、TXT 与 `.apkg` 下载。
+测试覆盖题库兼容性、教材卡生成、HTML 安全、AI 接口与候选审核、编辑与批量操作、撤销删除、草稿恢复、PDF worker、TXT 与 `.apkg` 下载。
 
 ## 技术栈
 

@@ -41,7 +41,7 @@ test('creates, edits, restores and exports cards', async ({ page }) => {
 
   await page.getByRole('button', { name: '文本粘贴' }).click();
   await page.getByRole('button', { name: '题库解析卡' }).click();
-  await page.locator('textarea').first().fill(`
+  await page.getByPlaceholder(/粘贴/).fill(`
     1-1 <img src=x onerror=alert(1)>？
     A. 甲
     B. 乙
@@ -103,4 +103,72 @@ test('loads a PDF through the bundled local worker', async ({ page }) => {
   });
 
   await expect(page.getByRole('alert')).toContainText('找到了题号');
+});
+
+test('uses a custom AI endpoint and requires candidate approval', async ({
+  page,
+}) => {
+  const authorizationHeaders: string[] = [];
+  await page.route('https://api.deepseek.com/chat/completions', async (route) => {
+    authorizationHeaders.push(
+      (await route.request().allHeaders()).authorization ?? '',
+    );
+    const request = route.request().postDataJSON() as {
+      messages: Array<{ content: string }>;
+    };
+    const isConnectionTest = request.messages.some((message) =>
+      message.content.includes('连接测试'),
+    );
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        usage: { prompt_tokens: 50, completion_tokens: 30 },
+        choices: [
+          {
+            message: {
+              content: isConnectionTest
+                ? '{"status":"ok"}'
+                : JSON.stringify({
+                    cards: [
+                      {
+                        question: '什么是犯罪构成？',
+                        answer: '犯罪构成是认定犯罪的法律要件体系。',
+                        type: '名词解释',
+                        tags: ['刑法'],
+                        sourceQuote:
+                          '犯罪构成是认定犯罪的法律要件体系。',
+                        confidence: 0.95,
+                      },
+                    ],
+                  }),
+            },
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '文本粘贴' }).click();
+  await page
+    .getByPlaceholder(/粘贴/)
+    .fill('犯罪构成是认定犯罪的法律要件体系。');
+  await page.getByText('AI 辅助生成候选卡').click();
+  await page
+    .getByLabel('API Key（仅保存在当前页面会话）')
+    .fill('test-secret');
+  await page.getByRole('button', { name: '测试连接' }).click();
+  await expect(page.getByText(/AI 接口连接成功/)).toBeVisible();
+
+  await page.getByRole('button', { name: '生成候选卡' }).click();
+  await expect(page.getByText(/待审核 1/)).toBeVisible();
+  await expect(page.getByText('AI 候选')).toBeVisible();
+  await page.getByRole('button', { name: '待审核 · 点击批准' }).click();
+  await expect(page.getByText(/待审核 1/)).toHaveCount(0);
+  expect(authorizationHeaders).toEqual([
+    'Bearer test-secret',
+    'Bearer test-secret',
+  ]);
 });

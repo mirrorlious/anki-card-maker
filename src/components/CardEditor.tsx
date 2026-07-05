@@ -16,6 +16,7 @@ interface CardEditorProps {
   index: number;
   selected: boolean;
   onDelete: (id: string) => void;
+  onApprove: (id: string) => void;
   onToggle: (id: string) => void;
   onUpdate: (
     id: string,
@@ -32,6 +33,7 @@ export function CardEditor({
   index,
   selected,
   onDelete,
+  onApprove,
   onToggle,
   onUpdate,
 }: CardEditorProps) {
@@ -40,6 +42,8 @@ export function CardEditor({
       className={`relative rounded-2xl border bg-white p-5 transition ${
         selected
           ? 'border-blue-400 shadow-sm ring-2 ring-blue-100'
+          : card.reviewStatus === 'pending'
+            ? 'border-amber-300 bg-amber-50/20 hover:shadow-md'
           : 'border-slate-200 hover:shadow-md'
       }`}
     >
@@ -59,6 +63,25 @@ export function CardEditor({
         <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-bold text-blue-800">
           {card.type || '未分类'}
         </span>
+        {card.origin === 'ai' && (
+          <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold text-violet-800">
+            AI 候选
+          </span>
+        )}
+        {card.reviewStatus === 'pending' && (
+          <button
+            type="button"
+            onClick={() => onApprove(card.id)}
+            className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 transition hover:bg-amber-200"
+          >
+            待审核 · 点击批准
+          </button>
+        )}
+        {typeof card.confidence === 'number' && (
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+            可信度 {Math.round(card.confidence * 100)}%
+          </span>
+        )}
         {card.sourcePage && (
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
             PDF 第 {card.sourcePage} 页
@@ -177,6 +200,17 @@ export function CardEditor({
           />
         </label>
       </div>
+
+      {card.sourceQuote && (
+        <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-600">
+            查看 AI 引用的原文依据
+          </summary>
+          <blockquote className="mt-2 whitespace-pre-line border-l-2 border-blue-300 pl-3 text-sm leading-relaxed text-slate-600">
+            {card.sourceQuote}
+          </blockquote>
+        </details>
+      )}
     </article>
   );
 }

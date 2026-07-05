@@ -54,9 +54,16 @@ function createCardId(): string {
 }
 
 export function createCard(
-  input: Omit<Card, 'id' | 'tags'> & { id?: string; tags?: string[] },
+  input: Omit<Card, 'id' | 'tags' | 'origin' | 'reviewStatus'> & {
+    id?: string;
+    tags?: string[];
+    origin?: Card['origin'];
+    reviewStatus?: Card['reviewStatus'];
+  },
 ): Card {
   return {
+    origin: 'local',
+    reviewStatus: 'approved',
     ...input,
     id: input.id ?? createCardId(),
     tags: input.tags ?? [],
@@ -388,7 +395,9 @@ export function buildTextbookCards(
   let currentHeading = '';
 
   const push = (
-    card: Omit<Card, 'id' | 'tags'> & { tags?: string[] },
+    card: Omit<Card, 'id' | 'tags' | 'origin' | 'reviewStatus'> & {
+      tags?: string[];
+    },
   ): void => {
     const key = `${card.question}|${card.answer.slice(0, 30)}`;
     if (seen.has(key) || card.question.length < 6 || card.answer.length < 14) {

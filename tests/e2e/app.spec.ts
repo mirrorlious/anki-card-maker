@@ -95,6 +95,11 @@ test('creates, edits, restores and exports cards', async ({ page }) => {
 
 test('loads a PDF through the bundled local worker', async ({ page }) => {
   await page.goto('/');
+  const decoder = await page.request.get('/pdfjs/wasm/jbig2.wasm');
+  expect(decoder.ok()).toBe(true);
+  expect(decoder.headers()['content-type']).toContain('application/wasm');
+  expect((await decoder.body()).byteLength).toBeGreaterThan(50_000);
+
   await page.getByRole('button', { name: '题库解析卡' }).click();
   await page.locator('#pdf-upload').setInputFiles({
     name: 'sample.pdf',

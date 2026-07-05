@@ -5,6 +5,7 @@ import {
   type PDFPageProxy,
 } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { PDF_DOCUMENT_ASSETS } from './pdfAssets';
 import type {
   ExtractedPage,
   ExtractMode,
@@ -208,7 +209,10 @@ export async function extractPdfPages(
   throwIfAborted(signal);
   onProgress?.({ stage: 'loading', completed: 0, total: 0 });
 
-  const loadingTask = getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  const loadingTask = getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    ...PDF_DOCUMENT_ASSETS,
+  });
   const abortLoading = () => {
     void loadingTask.destroy();
   };

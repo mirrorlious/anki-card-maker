@@ -2,6 +2,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LoaderCircle,
+  RefreshCw,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -15,6 +16,7 @@ import {
 } from 'react';
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { PDF_DOCUMENT_ASSETS } from '../pdfAssets';
 import type { PdfSourceRect } from '../types';
 
 interface PdfReaderProps {
@@ -47,6 +49,38 @@ function rectFromPoints(start: Point, end: Point): PdfSourceRect {
   };
 }
 
+function canvasLooksBlank(canvas: HTMLCanvasElement): boolean {
+  const context = canvas.getContext('2d');
+  if (!context || !canvas.width || !canvas.height) return true;
+  const pixels = context.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  ).data;
+  const step = Math.max(
+    4,
+    Math.floor(Math.min(canvas.width, canvas.height) / 90),
+  );
+  let sampled = 0;
+  let visibleInk = 0;
+  for (let y = 0; y < canvas.height; y += step) {
+    for (let x = 0; x < canvas.width; x += step) {
+      const index = (y * canvas.width + x) * 4;
+      sampled += 1;
+      if (
+        pixels[index + 3] > 0 &&
+        (pixels[index] < 247 ||
+          pixels[index + 1] < 247 ||
+          pixels[index + 2] < 247)
+      ) {
+        visibleInk += 1;
+      }
+    }
+  }
+  return visibleInk < Math.max(3, sampled * 0.001);
+}
+
 export function PdfReader({
   file,
   focusMode,
@@ -59,6 +93,8 @@ export function PdfReader({
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1.2);
+  const [renderRevision, setRenderRevision] = useState(0);
+  const [blankPage, setBlankPage] = useState(false);
   const [renderedSize, setRenderedSize] = useState({ width: 0, height: 0 });
   const [draftRect, setDraftRect] = useState<PdfSourceRect | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -82,6 +118,7 @@ export function PdfReader({
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
         loadingTask = pdfjs.getDocument({
           data: new Uint8Array(await file.arrayBuffer()),
+          ...PDF_DOCUMENT_ASSETS,
         });
         const loaded = await loadingTask.promise;
         if (!active) return;
@@ -106,6 +143,7 @@ export function PdfReader({
 
     void (async () => {
       try {
+        setBlankPage(false);
         const safePage = clamp(pageNumber, 1, document.numPages);
         const page = await document.getPage(safePage);
         if (!active || !canvasRef.current) return;
@@ -131,6 +169,7 @@ export function PdfReader({
           viewport: renderViewport,
         });
         await renderTask.promise;
+        if (active) setBlankPage(canvasLooksBlank(canvas));
         page.cleanup();
       } catch (renderError) {
         if (
@@ -146,7 +185,7 @@ export function PdfReader({
       active = false;
       renderTask?.cancel();
     };
-  }, [document, pageNumber, zoom]);
+  }, [document, pageNumber, renderRevision, zoom]);
 
   const pointFromClient = useCallback((clientX: number, clientY: number): Point => {
     const bounds = overlayRef.current?.getBoundingClientRect();
@@ -302,6 +341,20 @@ export function PdfReader({
         {error && (
           <div className="mx-auto max-w-lg rounded-xl bg-red-950/80 p-4 text-sm text-red-200">
             {error}
+          </div>
+        )}
+        {blankPage && !error && (
+          <div className="sticky left-1/2 top-3 z-30 mx-auto mb-3 flex w-fit max-w-lg -translate-x-1/2 items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-lg">
+            <span>
+              当前页渲染为空白。若原页有内容，请尝试重新渲染。
+            </span>
+            <button
+              type="button"
+              onClick={() => setRenderRevision((current) => current + 1)}
+              className="inline-flex flex-shrink-0 items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1.5 font-semibold text-white hover:bg-amber-700"
+            >
+              <RefreshCw size={13} /> 重试
+            </button>
           </div>
         )}
         <div

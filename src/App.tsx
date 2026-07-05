@@ -262,11 +262,6 @@ export default function App() {
       parsePositiveInt(settings.maxAnswerLength, 220),
       parsePositiveInt(settings.maxCardsPerPage, 5),
     );
-    if (!generated.length) {
-      throw new Error(
-        '严格质量规则下没有生成可靠卡片。请选择正文页、提高 OCR 清晰度，或使用 AI 辅助生成候选卡。',
-      );
-    }
     return generated;
   };
 
@@ -281,7 +276,11 @@ export default function App() {
           : undefined,
       );
       replaceCards(generated);
-      setStatusMessage(`完成：生成 ${generated.length} 张卡片。`);
+      setStatusMessage(
+        generated.length
+          ? `完成：生成 ${generated.length} 张卡片。`
+          : '原文已保留，但本地规则暂未识别出可靠卡片。可检查文本、添加空白卡，或使用 AI 辅助生成候选卡。',
+      );
     } catch (error) {
       setErrorMessage((error as Error).message);
       setStatusMessage('');
@@ -325,14 +324,27 @@ export default function App() {
             `--- PAGE ${page.page} [${page.method}] ---\n${page.text}`,
         )
         .join('\n\n');
-      const generated = generateCards(fullText, extractedPages);
       const ocrCount = extractedPages.filter(
         (page) => page.method === 'ocr',
       ).length;
       setInputText(fullText);
+      let generated: Card[];
+      try {
+        generated = generateCards(fullText, extractedPages);
+      } catch (error) {
+        setErrorMessage(
+          `PDF 已成功读取，但制卡未完成：${(error as Error).message}`,
+        );
+        setStatusMessage(
+          `已读取 ${extractedPages.length} 页（OCR ${ocrCount} 页），提取原文已保留。`,
+        );
+        return;
+      }
       replaceCards(generated);
       setStatusMessage(
-        `完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页），生成 ${generated.length} 张卡片。`,
+        generated.length
+          ? `完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页），生成 ${generated.length} 张卡片。`
+          : `PDF 提取完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页）。本地规则暂未生成卡片，原文已保留，可直接使用 AI 辅助或添加空白卡。`,
       );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -1272,13 +1284,13 @@ export default function App() {
                     共 {cards.length} 张
                     {pendingCount > 0 ? ` · 待审核 ${pendingCount}` : ''}
                   </span>
-                  {inputText.trim() && cards.length > 0 && (
+                  {inputText.trim() && (
                     <button
                       type="button"
                       onClick={processPastedText}
                       className={buttonSecondary}
                     >
-                      <RefreshCw size={16} /> 按新规则重新识别
+                      <RefreshCw size={16} /> 重新生成本地卡片
                     </button>
                   )}
                   <button
@@ -1379,7 +1391,9 @@ export default function App() {
                   <FileText className="mb-4 h-16 w-16 opacity-20" />
                   <p className="font-medium text-slate-500">暂无卡片</p>
                   <p className="mt-2 max-w-md text-sm">
-                    上传 PDF 或粘贴文本。系统生成草稿后，可在这里修改、批量整理并导出。
+                    {inputText.trim()
+                      ? '原文已经提取，可重新生成本地卡片、添加空白卡，或使用左侧 AI 辅助生成候选卡。'
+                      : '上传 PDF 或粘贴文本。系统生成草稿后，可在这里修改、批量整理并导出。'}
                   </p>
                 </div>
               ) : (

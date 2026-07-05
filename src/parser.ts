@@ -331,9 +331,15 @@ function normalizeSpaces(value: string): string {
 export function cleanTextbookText(value: string): string {
   return normalizeSpaces(value)
     .replace(/[`´]{1,}/g, '')
-    .replace(/\s+([，。；：！？])/g, '$1')
-    .replace(/([（《“])\s+/g, '$1')
-    .replace(/\s+([）》”])/g, '$1')
+    .replace(
+      /([\u3400-\u9fff])[ \t]+(?=[\u3400-\u9fffA-Za-z0-9])/g,
+      '$1',
+    )
+    .replace(/([A-Za-z0-9])[ \t]+(?=[\u3400-\u9fff])/g, '$1')
+    .replace(/[ \t]*([，。；：！？、])[ \t]*/g, '$1')
+    .replace(/[ \t]+(?=[（(《〈“”])/g, '')
+    .replace(/([（(《〈“”])[ \t]+/g, '$1')
+    .replace(/[ \t]+([）)》〉”])/g, '$1')
     .replace(/香气物联网\s*P?D?G?/g, '')
     .replace(/农业生态学\s*$/gm, '')
     .replace(/^\s*[·•]\s*\d+\s*[·•]?\s*$/gm, '')
@@ -376,7 +382,9 @@ function extractNumberedHeading(line: string): ExtractedHeading | null {
 
   const kind = marker[2] === '章' ? 'chapter' : 'section';
   const remainder = trimmed.slice(marker[0].length).trim();
-  const quoted = remainder.match(/^[“"《]([^”"》]{2,40})[”"》]\s*/);
+  const quoted = remainder.match(
+    /^[“”"《〈]([^“”"《》〈〉]{2,40})[“”"》〉]\s*/,
+  );
   if (quoted) {
     return {
       heading: `${marker[1]} ${quoted[1].trim()}`,
@@ -408,7 +416,7 @@ function extractNumberedHeading(line: string): ExtractedHeading | null {
     return {
       heading: `${marker[1]} ${remainder
         .slice(0, boundary)
-        .replace(/^[“"《]|[”"》]$/g, '')
+        .replace(/^[“”"《〈]|[“”"》〉]$/g, '')
         .trim()}`,
       body: remainder.slice(boundary).trim(),
       kind,
@@ -418,7 +426,7 @@ function extractNumberedHeading(line: string): ExtractedHeading | null {
   if (remainder.length <= 32 && !/[。！？；]/.test(remainder)) {
     return {
       heading: `${marker[1]} ${remainder
-        .replace(/^[“"《]|[”"》]$/g, '')
+        .replace(/^[“”"《〈]|[“”"》〉]$/g, '')
         .trim()}`,
       body: '',
       kind,
@@ -433,24 +441,75 @@ function extractMinorHeading(line: string): string | null {
   const match = trimmed.match(
     /^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\d+[.、])\s*(\S.{1,30})$/,
   );
-  return match?.[1]?.trim() ?? null;
+  const rawHeading = match?.[1]?.trim();
+  if (!rawHeading) return null;
+  return (
+    rawHeading.match(/^([\u3400-\u9fff]{2,20})/)?.[1] ?? rawHeading
+  );
+}
+
+function extractInlineTopic(
+  line: string,
+): { body: string; heading: string } | null {
+  const repeated = line.match(
+    /^([\u3400-\u9fff]{2,12})[“”"：:]?(?=\1(?:是|指|含有|具有|由))/,
+  );
+  if (!repeated) return null;
+  return {
+    heading: repeated[1],
+    body: line.slice(repeated[0].length),
+  };
+}
+
+function extractStandaloneHeading(line: string): string | null {
+  if (
+    line.length < 2 ||
+    line.length > 24 ||
+    /[，。；：！？、]/.test(line)
+  ) {
+    return null;
+  }
+  const chineseCount = line.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  if (chineseCount / line.length < 0.72) return null;
+  return line.replace(/^[^\u3400-\u9fff]+|[^\u3400-\u9fff]+$/g, '');
+}
+
+function isLikelyOcrLineNoise(line: string): boolean {
+  const chineseCount = line.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  if (/^[\u3400-\u9fff]?传学$/.test(line)) return true;
+  return (
+    line.length <= 12 &&
+    chineseCount < 4 &&
+    !/[。！？；]/.test(line) &&
+    (chineseCount === 0 || /[<>{}[\]|\\]/.test(line))
+  );
 }
 
 function headingTopic(heading: string): string {
   return heading
     .replace(/^第[一二三四五六七八九十百千\d]+[章节]\s*/, '')
-    .replace(/^[“"《]|[”"》]$/g, '')
+    .replace(/^[“”"《〈]|[“”"》〉]$/g, '')
     .trim();
 }
 
 function cleanSubject(value: string, fallback = ''): string {
   let subject = value
+    .replace(
+      /[（(〈]?[A-Za-z][A-Za-z0-9 .,'’/_-]{1,60}[）)〉]?\s*$/i,
+      '',
+    )
     .replace(/^(?:根据|按照|对于|关于|其中|一般(?:而言)?|通常|所谓)\s*/, '')
     .replace(/^(?:可将|可把|将|把)\s*/, '')
     .replace(/[，。；：:“”"《》]/g, '')
     .replace(/(?:大致|大体|概|主要|都)$/g, '')
     .trim();
 
+  if (
+    subject.length % 2 === 0 &&
+    subject.slice(0, subject.length / 2) === subject.slice(subject.length / 2)
+  ) {
+    subject = subject.slice(0, subject.length / 2);
+  }
   if (/^(?:其|它|该|这种|这些|此)(?:的)?/.test(subject)) {
     subject = fallback;
   }
@@ -458,7 +517,9 @@ function cleanSubject(value: string, fallback = ''): string {
     subject.length < 2 ||
     subject.length > 28 ||
     !/[\u4e00-\u9fff]{2}/.test(subject) ||
-    /(?:本章|本节|下文|如下|上述|未识别)/.test(subject)
+    /(?:本章|本节|下文|如下|上述|未识别|虽然|因为|不论|但是|现已|已经|试验|研究|证明|表明|认为|可见|为了|外上间|厂面)/.test(
+      subject,
+    )
   ) {
     return '';
   }
@@ -466,7 +527,12 @@ function cleanSubject(value: string, fallback = ''): string {
 }
 
 function isUsableSentence(sentence: string): boolean {
-  const chineseCount = sentence.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
+  const semanticText = sentence.replace(
+    /[（(〈][A-Za-z][A-Za-z0-9 .,'’/_-]{1,80}[）)〉]/g,
+    '',
+  );
+  const chineseCount =
+    semanticText.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
   const unusualCount =
     sentence.match(/[^\u4e00-\u9fffA-Za-z0-9，。；：！？、（）()《》“”"·%+\-—\s]/g)
       ?.length ?? 0;
@@ -474,7 +540,7 @@ function isUsableSentence(sentence: string): boolean {
     sentence.length >= 16 &&
     sentence.length <= 320 &&
     chineseCount >= 10 &&
-    chineseCount / sentence.length >= 0.45 &&
+    chineseCount / semanticText.length >= 0.45 &&
     unusualCount / sentence.length < 0.08 &&
     !/(?:进行介绍|将在下文|本章主要|本节主要|学习目标|思考题|复习题|如图|见图|图\d|表\d)/.test(
       sentence,
@@ -509,7 +575,7 @@ function candidateFromSentence(
   const normalized = sentence.replace(/\s+/g, ' ').trim();
 
   const namedMatch = normalized.match(
-    /^(.{10,240}?)(?:被称为|称为|叫作|叫做)([^，。；]{2,20})[。；]?$/,
+    /^(.{10,240}?)(?:被称为|称为|叫作|叫做)([^，。；]{2,70})[。；]?$/,
   );
   if (namedMatch) {
     const term = cleanSubject(namedMatch[2]);
@@ -538,6 +604,28 @@ function candidateFromSentence(
         '名词解释',
         100,
         0.94,
+      );
+    }
+  }
+
+  const copulaDefinitionMatch = normalized.match(
+    /^([^，。；：]{2,60}?)是([^。；]{8,260})[。；]?$/,
+  );
+  if (
+    copulaDefinitionMatch &&
+    /(?:基本单位|基本结构|一种[^，。；]{0,28}(?:细胞器|物质|结构|现象|过程|方法|体系)|统称|总称)/.test(
+      copulaDefinitionMatch[2],
+    )
+  ) {
+    const term = cleanSubject(copulaDefinitionMatch[1], contextTopic);
+    if (term) {
+      return makeCandidate(
+        normalized,
+        `什么是${term}？`,
+        term,
+        '名词解释',
+        98,
+        0.9,
       );
     }
   }
@@ -738,7 +826,10 @@ export function buildTextbookCards(
     const lines = text
       .split('\n')
       .map((line) => line.trim())
-      .filter((line) => line && !marginNoise.has(line));
+      .filter(
+        (line) =>
+          line && !marginNoise.has(line) && !isLikelyOcrLineNoise(line),
+      );
     const paragraphs: Array<{
       chapter: string;
       heading: string;
@@ -776,6 +867,18 @@ export function buildTextbookCards(
           flush();
           currentHeading = minorHeading;
           return;
+        }
+        const inlineTopic = extractInlineTopic(line);
+        if (inlineTopic) {
+          flush();
+          currentHeading = inlineTopic.heading;
+          line = inlineTopic.body;
+        } else if (!buffer) {
+          const standaloneHeading = extractStandaloneHeading(line);
+          if (standaloneHeading) {
+            currentHeading = standaloneHeading;
+            return;
+          }
         }
       }
 

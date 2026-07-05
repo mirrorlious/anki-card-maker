@@ -105,6 +105,28 @@ test('loads a PDF through the bundled local worker', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText('找到了题号');
 });
 
+test('keeps extracted PDF text when strict textbook rules generate no cards', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByLabel('识别方式').selectOption('text');
+  await page.locator('#pdf-upload').setInputFiles({
+    name: 'preface.pdf',
+    mimeType: 'application/pdf',
+    buffer: createTextPdf('Preface and publication information only.'),
+  });
+
+  await expect(page.getByRole('status')).toContainText('PDF 提取完成');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: '重新生成本地卡片' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '文本粘贴' }).click();
+  await expect(page.getByPlaceholder(/粘贴/)).toContainText(
+    'Preface and publication information only.',
+  );
+});
+
 test('uses a custom AI endpoint and requires candidate approval', async ({
   page,
 }) => {
@@ -155,7 +177,7 @@ test('uses a custom AI endpoint and requires candidate approval', async ({
   await page
     .getByPlaceholder(/粘贴/)
     .fill('犯罪构成是认定犯罪的法律要件体系。');
-  await page.getByText('AI 辅助生成候选卡').click();
+  await page.getByText('AI 辅助生成候选卡', { exact: true }).click();
   await page
     .getByLabel('API Key（仅保存在当前页面会话）')
     .fill('test-secret');

@@ -203,3 +203,50 @@ test('restores PDF page boundaries when regenerating from saved extracted text',
   assert.match(pages[0].text, /第一页正文/);
   assert.match(pages[1].text, /第二页正文/);
 });
+
+test('normalizes OCR character spacing before extracting textbook cards', () => {
+  const cards = buildTextbookCards(
+    [
+      {
+        page: 21,
+        text: `< 一
+        [第 二 恒
+        W
+        遗传 的 细胞 学 基础
+        细胞 (cell) 是 生物 体 结构 和 生命 活动 的 基本 单位 。
+        高 等 的 多 细胞 生物 虽然 是 由 许多 形态 不 同 的 细胞 所 组 成 ， 但 生命 活动 仍 以 细胞 为 基础 。
+        正 因为 生物 具有 繁殖 后 代 的 能 力 ， 才 能 世代 相传 。
+        第 一 节 ”细胞 的 结构 和 功能
+        根 据 细胞 结构 的 复杂 程度 ， 可 把 生物 界 的 细胞 概 分 为 两 类 ： 原核 细胞 和 真 核 细胞 。`,
+      },
+      {
+        page: 23,
+        text: `现 已 肯定 线粒体 、 叶绿体 、 核糖 体 和 内 质 网 等 具有 重要 的 遗传 功能 。
+        线粒体 ”线粒体 是 由 内 外 两 层 膜 组 成 ， 外 膜 光滑 ， 内 膜 向 内 回旋 折叠 ， 形成 许多 横 隔 。
+        线粒体 含有 大 量 的 脂 类 ， 主 要 是 磷脂 类 。`,
+      },
+      {
+        page: 27,
+        text: `形态 和 结构 相同 的 一 对 染色 体 ， 称 为 同 源 染色 体 (homologous chromosome) 。`,
+      },
+    ],
+    220,
+    5,
+  );
+  const questions = cards.map((card) => card.question);
+
+  assert.ok(
+    questions.includes('按细胞结构的复杂程度，生物界的细胞可分为哪几类？'),
+  );
+  assert.ok(questions.includes('什么是细胞？'));
+  assert.ok(questions.includes('线粒体由哪些部分组成？'));
+  assert.ok(questions.includes('线粒体含有哪些重要成分？'));
+  assert.ok(questions.includes('什么是同源染色体？'));
+  assert.ok(
+    questions.every(
+      (question) =>
+        !/(?:虽然|正因为|现已|叶绿体叶绿体|外上间|厂面)/.test(question),
+    ),
+  );
+  assert.ok(cards.every((card) => !card.answer.includes('线 粒 体')));
+});

@@ -212,6 +212,7 @@ test('normalizes OCR character spacing before extracting textbook cards', () => 
         text: `< 一
         [第 二 恒
         W
+        一
         遗传 的 细胞 学 基础
         细胞 (cell) 是 生物 体 结构 和 生命 活动 的 基本 单位 。
         高 等 的 多 细胞 生物 虽然 是 由 许多 形态 不 同 的 细胞 所 组 成 ， 但 生命 活动 仍 以 细胞 为 基础 。

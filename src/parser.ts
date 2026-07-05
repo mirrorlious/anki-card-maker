@@ -477,6 +477,13 @@ function extractStandaloneHeading(line: string): string | null {
 function isLikelyOcrLineNoise(line: string): boolean {
   const chineseCount = line.match(/[\u3400-\u9fff]/g)?.length ?? 0;
   if (/^[\u3400-\u9fff]?传学$/.test(line)) return true;
+  if (
+    !/[。！？；]/.test(line) &&
+    (chineseCount <= 1 || /^[一二三四五六七八九十]+[、.]?$/.test(line)) &&
+    line.length <= 4
+  ) {
+    return true;
+  }
   return (
     line.length <= 12 &&
     chineseCount < 4 &&

@@ -1,6 +1,7 @@
 import {
   getDocument,
   GlobalWorkerOptions,
+  Util,
   type PDFPageProxy,
 } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -8,6 +9,7 @@ import type {
   ExtractedPage,
   ExtractMode,
   PdfProgress,
+  SourceTextRegion,
 } from './types';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -26,7 +28,22 @@ interface ExtractPdfOptions {
 
 interface NativePage {
   page: number;
+  regions: SourceTextRegion[];
   text: string;
+}
+
+interface PageTextExtraction {
+  regions: SourceTextRegion[];
+  text: string;
+}
+
+interface OcrLine {
+  bbox: { x0: number; x1: number; y0: number; y1: number };
+  text: string;
+}
+
+interface OcrBlock {
+  paragraphs?: Array<{ lines?: OcrLine[] }>;
 }
 
 function abortError(): DOMException {
@@ -50,9 +67,42 @@ function startsWithWordCharacter(value: string): boolean {
   return /^[A-Za-z0-9]/.test(value);
 }
 
-async function extractNativeText(page: PDFPageProxy): Promise<string> {
+function normalizedRegion(
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  pageWidth: number,
+  pageHeight: number,
+): SourceTextRegion | null {
+  if (
+    !text.trim() ||
+    pageWidth <= 0 ||
+    pageHeight <= 0 ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  const left = Math.min(Math.max(x / pageWidth, 0), 1);
+  const top = Math.min(Math.max(y / pageHeight, 0), 1);
+  return {
+    text,
+    x: left,
+    y: top,
+    width: Math.min(Math.max(width / pageWidth, 0), 1 - left),
+    height: Math.min(Math.max(height / pageHeight, 0), 1 - top),
+  };
+}
+
+async function extractNativeText(
+  page: PDFPageProxy,
+): Promise<PageTextExtraction> {
   const textContent = await page.getTextContent();
+  const viewport = page.getViewport({ scale: 1 });
   let result = '';
+  const regions: SourceTextRegion[] = [];
   let previous:
     | { endX: number; fontSize: number; text: string; y: number }
     | undefined;
@@ -63,6 +113,19 @@ async function extractNativeText(page: PDFPageProxy): Promise<string> {
     const y = item.transform[5];
     const fontSize =
       Math.hypot(item.transform[2], item.transform[3]) || item.height || 10;
+    const transformed = Util.transform(viewport.transform, item.transform);
+    const renderedFontSize =
+      Math.hypot(transformed[2], transformed[3]) || fontSize;
+    const region = normalizedRegion(
+      item.str,
+      transformed[4],
+      transformed[5] - renderedFontSize,
+      Math.max(Math.abs(item.width), renderedFontSize * 0.2),
+      renderedFontSize,
+      viewport.width,
+      viewport.height,
+    );
+    if (region) regions.push(region);
 
     if (previous) {
       const tolerance = Math.max(
@@ -98,7 +161,32 @@ async function extractNativeText(page: PDFPageProxy): Promise<string> {
     }
   }
   page.cleanup();
-  return result.trim();
+  return { text: result.trim(), regions };
+}
+
+function ocrRegions(
+  blocks: OcrBlock[] | null,
+  width: number,
+  height: number,
+): SourceTextRegion[] {
+  if (!blocks) return [];
+  return blocks.flatMap((block) =>
+    (block.paragraphs ?? []).flatMap((paragraph) =>
+      (paragraph.lines ?? [])
+        .map((line) =>
+          normalizedRegion(
+            line.text,
+            line.bbox.x0,
+            line.bbox.y0,
+            line.bbox.x1 - line.bbox.x0,
+            line.bbox.y1 - line.bbox.y0,
+            width,
+            height,
+          ),
+        )
+        .filter((region): region is SourceTextRegion => region !== null),
+    ),
+  );
 }
 
 async function renderPage(page: PDFPageProxy, scale: number): Promise<HTMLCanvasElement> {
@@ -147,9 +235,10 @@ export async function extractPdfPages(
         nextIndex += 1;
         const pageNumber = pageNumbers[index];
         const page = await pdf.getPage(pageNumber);
+        const extraction = await extractNativeText(page);
         nativePages[index] = {
           page: pageNumber,
-          text: await extractNativeText(page),
+          ...extraction,
         };
         completed += 1;
         onProgress?.({
@@ -229,7 +318,16 @@ export async function extractPdfPages(
           Math.min(Math.max(options.ocrScale, 1), 3),
         );
         throwIfAborted(signal);
-        const recognition = await worker.recognize(canvas);
+        const recognition = await worker.recognize(
+          canvas,
+          {},
+          { blocks: true },
+        );
+        const regions = ocrRegions(
+          recognition.data.blocks as OcrBlock[] | null,
+          canvas.width,
+          canvas.height,
+        );
         canvas.width = 0;
         canvas.height = 0;
         page.cleanup();
@@ -245,6 +343,7 @@ export async function extractPdfPages(
           text: recognition.data.text.trim(),
           method: 'ocr',
           confidence: recognition.data.confidence,
+          regions,
         });
       }
       return results;

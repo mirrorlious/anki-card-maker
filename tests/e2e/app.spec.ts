@@ -125,6 +125,40 @@ test('keeps extracted PDF text when strict textbook rules generate no cards', as
   await expect(page.getByPlaceholder(/粘贴/)).toContainText(
     'Preface and publication information only.',
   );
+
+  await page.getByRole('button', { name: '添加卡片' }).click();
+  await page.getByRole('button', { name: 'PDF 对照' }).click();
+  await expect(page.getByLabel('PDF 页码')).toHaveAttribute('max', '1');
+  await page.getByRole('button', { name: '重新框选' }).click();
+  const overlay = page.getByTestId('pdf-source-overlay');
+  await overlay.scrollIntoViewIfNeeded();
+  const bounds = await overlay.boundingBox();
+  expect(bounds).not.toBeNull();
+  const viewport = page.viewportSize();
+  const startY = Math.max(bounds!.y + 30, 80);
+  const endY = Math.min(
+    bounds!.y + bounds!.height - 20,
+    (viewport?.height ?? 720) - 30,
+    startY + 90,
+  );
+  await page.mouse.move(
+    bounds!.x + bounds!.width * 0.15,
+    startY,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    bounds!.x + bounds!.width * 0.7,
+    endY,
+  );
+  await page.mouse.up();
+  await expect(page.getByText('已精确定位')).toBeVisible();
+  await expect(page.getByText('来源第 1 页')).toBeVisible();
+
+  await page.locator('main aside textarea').first().fill('校订后的问题');
+  await page.getByRole('button', { name: '卡片', exact: true }).click();
+  await expect(page.locator('article textarea').first()).toHaveValue(
+    '校订后的问题',
+  );
 });
 
 test('uses a custom AI endpoint and requires candidate approval', async ({

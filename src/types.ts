@@ -20,6 +20,18 @@ export interface Card {
   reviewStatus: ReviewStatus;
   sourceQuote?: string;
   confidence?: number;
+  sourceRects?: PdfSourceRect[];
+}
+
+export interface PdfSourceRect {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+}
+
+export interface SourceTextRegion extends PdfSourceRect {
+  text: string;
 }
 
 export interface ExtractedPage {
@@ -27,6 +39,7 @@ export interface ExtractedPage {
   text: string;
   method: ExtractMethod;
   confidence?: number;
+  regions?: SourceTextRegion[];
 }
 
 export interface TextPage {

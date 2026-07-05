@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react';
+import { MapPin, Trash2 } from 'lucide-react';
 import type { Card } from '../types';
 
 export type EditableCardField =
@@ -16,6 +16,7 @@ interface CardEditorProps {
   index: number;
   selected: boolean;
   onDelete: (id: string) => void;
+  onOpenSource?: (id: string) => void;
   onApprove: (id: string) => void;
   onToggle: (id: string) => void;
   onUpdate: (
@@ -33,6 +34,7 @@ export function CardEditor({
   index,
   selected,
   onDelete,
+  onOpenSource,
   onApprove,
   onToggle,
   onUpdate,
@@ -83,9 +85,15 @@ export function CardEditor({
           </span>
         )}
         {card.sourcePage && (
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
-            PDF 第 {card.sourcePage} 页
-          </span>
+          <button
+            type="button"
+            onClick={() => onOpenSource?.(card.id)}
+            className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+            title="在 PDF 中定位原文"
+          >
+            <MapPin size={12} />
+            PDF 第 {card.sourcePage} 页 · 定位
+          </button>
         )}
       </div>
 
@@ -204,7 +212,7 @@ export function CardEditor({
       {card.sourceQuote && (
         <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
           <summary className="cursor-pointer text-xs font-semibold text-slate-600">
-            查看 AI 引用的原文依据
+            查看引用的原文依据
           </summary>
           <blockquote className="mt-2 whitespace-pre-line border-l-2 border-blue-300 pl-3 text-sm leading-relaxed text-slate-600">
             {card.sourceQuote}

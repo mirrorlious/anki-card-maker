@@ -5,7 +5,11 @@ import {
   CheckCircle,
   FileArchive,
   FileJson,
+  Focus,
   FileText,
+  List,
+  MapPin,
+  MousePointer2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -21,6 +25,7 @@ import {
   CardEditor,
   type EditableCardField,
 } from './components/CardEditor';
+import { PdfReader } from './components/PdfReader';
 import {
   buildAnkiPackage,
   buildAnkiText,
@@ -37,6 +42,7 @@ import {
   parseExamCards,
   validateParserTemplate,
 } from './parser';
+import { attachSourceLocations } from './sourceLocator';
 import { clearDraft, loadDraft, saveDraft } from './storage';
 import type {
   AppSettings,
@@ -44,7 +50,9 @@ import type {
   AiSettings,
   Card,
   DraftData,
+  ExtractedPage,
   ParserTemplate,
+  PdfSourceRect,
   PdfProgress,
   TextPage,
 } from './types';
@@ -149,6 +157,13 @@ export default function App() {
   const [draftReady, setDraftReady] = useState(false);
   const [bulkTag, setBulkTag] = useState('');
   const [bulkType, setBulkType] = useState('简答题');
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfSourcePages, setPdfSourcePages] = useState<ExtractedPage[]>([]);
+  const [workspaceView, setWorkspaceView] = useState<'cards' | 'pdf'>('cards');
+  const [sourceCardId, setSourceCardId] = useState<string | null>(null);
+  const [previewPage, setPreviewPage] = useState(1);
+  const [focusSource, setFocusSource] = useState(true);
+  const [isSelectingSource, setIsSelectingSource] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const aiAbortControllerRef = useRef<AbortController | null>(null);
@@ -232,6 +247,7 @@ export default function App() {
 
   const replaceCards = (generated: Card[]): void => {
     setCards(generated);
+    setSourceCardId(generated[0]?.id ?? null);
     setSelectedIds(new Set());
     setLastDeletedSnapshot(null);
   };
@@ -272,10 +288,12 @@ export default function App() {
       const generated = generateCards(
         inputText,
         settings.parseMode === 'textbook'
-          ? pagesFromExtractedText(inputText)
+          ? pdfSourcePages.length
+            ? pdfSourcePages
+            : pagesFromExtractedText(inputText)
           : undefined,
       );
-      replaceCards(generated);
+      replaceCards(attachSourceLocations(generated, pdfSourcePages));
       setStatusMessage(
         generated.length
           ? `完成：生成 ${generated.length} 张卡片。`
@@ -328,9 +346,16 @@ export default function App() {
         (page) => page.method === 'ocr',
       ).length;
       setInputText(fullText);
+      setPdfFile(file);
+      setPdfSourcePages(extractedPages);
+      setPreviewPage(extractedPages[0]?.page ?? 1);
+      setWorkspaceView('cards');
       let generated: Card[];
       try {
-        generated = generateCards(fullText, extractedPages);
+        generated = attachSourceLocations(
+          generateCards(fullText, extractedPages),
+          extractedPages,
+        );
       } catch (error) {
         setErrorMessage(
           `PDF 已成功读取，但制卡未完成：${(error as Error).message}`,
@@ -439,7 +464,11 @@ export default function App() {
         },
       );
       const existing = new Set(cards.map(cardIdentity));
-      const uniqueCandidates = result.cards.filter((card) => {
+      const locatedCandidates = attachSourceLocations(
+        result.cards,
+        pdfSourcePages,
+      );
+      const uniqueCandidates = locatedCandidates.filter((card) => {
         const key = cardIdentity(card);
         if (existing.has(key)) return false;
         existing.add(key);
@@ -485,10 +514,75 @@ export default function App() {
     );
   };
 
+  const openCardSource = (id: string): void => {
+    const card = cards.find((candidate) => candidate.id === id);
+    if (!card) return;
+    if (!pdfFile) {
+      setErrorMessage('当前会话没有可预览的 PDF，请重新上传原文件。');
+      return;
+    }
+    setErrorMessage('');
+    setSourceCardId(id);
+    setPreviewPage(card.sourcePage ?? previewPage);
+    setIsSelectingSource(false);
+    setWorkspaceView('pdf');
+  };
+
+  const openPdfWorkspace = (): void => {
+    if (!pdfFile) return;
+    const card =
+      cards.find((candidate) => candidate.id === sourceCardId) ??
+      cards.find((candidate) => candidate.sourcePage) ??
+      cards[0];
+    setSourceCardId(card?.id ?? null);
+    if (card?.sourcePage) setPreviewPage(card.sourcePage);
+    setIsSelectingSource(false);
+    setWorkspaceView('pdf');
+  };
+
+  const setActiveSourceCard = (id: string): void => {
+    const card = cards.find((candidate) => candidate.id === id);
+    if (!card) return;
+    setSourceCardId(id);
+    if (card.sourcePage) setPreviewPage(card.sourcePage);
+    setIsSelectingSource(false);
+  };
+
+  const selectSourceRect = (rect: PdfSourceRect): void => {
+    if (!sourceCardId) return;
+    setCards((current) =>
+      current.map((card) =>
+        card.id === sourceCardId
+          ? {
+              ...card,
+              sourcePage: previewPage,
+              sourceRects: [rect],
+            }
+          : card,
+      ),
+    );
+    setIsSelectingSource(false);
+    setStatusMessage(`已将当前框选设为 PDF 第 ${previewPage} 页的原文依据。`);
+  };
+
+  const clearSourceRects = (): void => {
+    if (!sourceCardId) return;
+    setCards((current) =>
+      current.map((card) =>
+        card.id === sourceCardId
+          ? { ...card, sourceRects: undefined }
+          : card,
+      ),
+    );
+    setIsSelectingSource(false);
+    setStatusMessage('已清除当前卡片的精确定位，可重新框选原文。');
+  };
+
   const deleteCards = (ids: Set<string>): void => {
     if (!ids.size) return;
     setLastDeletedSnapshot(cards);
     setCards((current) => current.filter((card) => !ids.has(card.id)));
+    if (sourceCardId && ids.has(sourceCardId)) setSourceCardId(null);
     setSelectedIds((current) => {
       const next = new Set(current);
       ids.forEach((id) => next.delete(id));
@@ -582,6 +676,7 @@ export default function App() {
     });
     setLastDeletedSnapshot(null);
     setCards((current) => [card, ...current]);
+    setSourceCardId(card.id);
     setStatusMessage('已添加空白卡片，请在预览区编辑。');
   };
 
@@ -642,6 +737,12 @@ export default function App() {
     setSelectedIds(new Set());
     setLastDeletedSnapshot(null);
     setApiKey('');
+    setPdfFile(null);
+    setPdfSourcePages([]);
+    setWorkspaceView('cards');
+    setSourceCardId(null);
+    setPreviewPage(1);
+    setIsSelectingSource(false);
     setAiProgress(null);
     setErrorMessage('');
     setStatusMessage('工作区已清空。');
@@ -666,6 +767,11 @@ export default function App() {
       selectedIds.has(card.id) && card.reviewStatus === 'pending',
   ).length;
   const allSelected = cards.length > 0 && selectedCount === cards.length;
+  const sourceCard =
+    cards.find((card) => card.id === sourceCardId) ?? cards[0] ?? null;
+  const cardsOnPreviewPage = cards.filter(
+    (card) => card.sourcePage === previewPage,
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 text-slate-800 sm:p-6">
@@ -1274,12 +1380,51 @@ export default function App() {
             <div className="space-y-3 border-b border-slate-100 bg-slate-50/70 p-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="font-bold text-slate-900">卡片预览与精修</h2>
+                  <h2 className="font-bold text-slate-900">
+                    {workspaceView === 'pdf'
+                      ? 'PDF 对照校订'
+                      : '卡片预览与精修'}
+                  </h2>
                   <p className="mt-1 text-sm text-slate-500">
-                    全字段可编辑；草稿会自动保存在本机浏览器。
+                    {workspaceView === 'pdf'
+                      ? '定位原文、高亮依据，并在阅读时直接修正卡片。'
+                      : '全字段可编辑；草稿会自动保存在本机浏览器。'}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex rounded-xl border border-slate-200 bg-white p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWorkspaceView('cards');
+                        setIsSelectingSource(false);
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        workspaceView === 'cards'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <List size={14} /> 卡片
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openPdfWorkspace}
+                      disabled={!pdfFile}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${
+                        workspaceView === 'pdf'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                      title={
+                        pdfFile
+                          ? `打开 ${pdfFile.name}`
+                          : '上传 PDF 后可使用对照阅读'
+                      }
+                    >
+                      <MapPin size={14} /> PDF 对照
+                    </button>
+                  </div>
                   <span className="rounded-full bg-slate-200 px-3 py-1 text-sm font-semibold text-slate-700">
                     共 {cards.length} 张
                     {pendingCount > 0 ? ` · 待审核 ${pendingCount}` : ''}
@@ -1303,7 +1448,7 @@ export default function App() {
                 </div>
               </div>
 
-              {cards.length > 0 && (
+              {workspaceView === 'cards' && cards.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -1385,34 +1530,209 @@ export default function App() {
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4">
-              {cards.length === 0 ? (
-                <div className="flex h-full min-h-[620px] flex-col items-center justify-center px-8 text-center text-slate-400">
-                  <FileText className="mb-4 h-16 w-16 opacity-20" />
-                  <p className="font-medium text-slate-500">暂无卡片</p>
-                  <p className="mt-2 max-w-md text-sm">
-                    {inputText.trim()
-                      ? '原文已经提取，可重新生成本地卡片、添加空白卡，或使用左侧 AI 辅助生成候选卡。'
-                      : '上传 PDF 或粘贴文本。系统生成草稿后，可在这里修改、批量整理并导出。'}
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {cards.map((card, index) => (
-                    <CardEditor
-                      key={card.id}
-                      card={card}
-                      index={index}
-                      selected={selectedIds.has(card.id)}
-                      onToggle={toggleCard}
-                      onDelete={(id) => deleteCards(new Set([id]))}
-                      onApprove={approveCard}
-                      onUpdate={updateCard}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+            {workspaceView === 'cards' ? (
+              <div className="flex-1 overflow-y-auto p-4">
+                {cards.length === 0 ? (
+                  <div className="flex h-full min-h-[620px] flex-col items-center justify-center px-8 text-center text-slate-400">
+                    <FileText className="mb-4 h-16 w-16 opacity-20" />
+                    <p className="font-medium text-slate-500">暂无卡片</p>
+                    <p className="mt-2 max-w-md text-sm">
+                      {inputText.trim()
+                        ? '原文已经提取，可重新生成本地卡片、添加空白卡，或使用左侧 AI 辅助生成候选卡。'
+                        : '上传 PDF 或粘贴文本。系统生成草稿后，可在这里修改、批量整理并导出。'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {cards.map((card, index) => (
+                      <CardEditor
+                        key={card.id}
+                        card={card}
+                        index={index}
+                        selected={selectedIds.has(card.id)}
+                        onToggle={toggleCard}
+                        onDelete={(id) => deleteCards(new Set([id]))}
+                        onApprove={approveCard}
+                        onOpenSource={openCardSource}
+                        onUpdate={updateCard}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : pdfFile ? (
+              <div className="grid flex-1 gap-4 overflow-y-auto bg-slate-100 p-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <PdfReader
+                  file={pdfFile}
+                  pageNumber={previewPage}
+                  onPageChange={(page) => {
+                    setPreviewPage(page);
+                    setIsSelectingSource(false);
+                  }}
+                  sourceRects={
+                    sourceCard?.sourcePage === previewPage
+                      ? (sourceCard.sourceRects ?? [])
+                      : []
+                  }
+                  focusMode={focusSource}
+                  selectionMode={isSelectingSource}
+                  onSelectRect={selectSourceRect}
+                />
+
+                <aside className="space-y-3">
+                  <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold text-slate-900">
+                          当前页卡片
+                        </h3>
+                        <p className="mt-1 text-xs text-slate-500">
+                          PDF 第 {previewPage} 页 · {cardsOnPreviewPage.length}{' '}
+                          张
+                        </p>
+                      </div>
+                      <span className="max-w-36 truncate rounded-lg bg-slate-100 px-2 py-1 text-[11px] text-slate-500">
+                        {pdfFile.name}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex max-h-32 flex-wrap gap-2 overflow-y-auto">
+                      {cardsOnPreviewPage.length ? (
+                        cardsOnPreviewPage.map((card) => (
+                          <button
+                            key={card.id}
+                            type="button"
+                            onClick={() => setActiveSourceCard(card.id)}
+                            className={`max-w-full truncate rounded-lg px-2.5 py-1.5 text-left text-xs font-medium transition ${
+                              sourceCard?.id === card.id
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                            title={card.question}
+                          >
+                            {card.question || '未命名卡片'}
+                          </button>
+                        ))
+                      ) : (
+                        <p className="text-xs leading-relaxed text-slate-400">
+                          当前页还没有卡片。可选择任意卡片后，在本页重新框选原文。
+                        </p>
+                      )}
+                    </div>
+                  </section>
+
+                  {sourceCard ? (
+                    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-slate-950 px-2 py-1 text-[11px] font-bold text-white">
+                          卡片 {cards.indexOf(sourceCard) + 1}
+                        </span>
+                        {sourceCard.sourcePage && (
+                          <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                            来源第 {sourceCard.sourcePage} 页
+                          </span>
+                        )}
+                        {sourceCard.sourceRects?.length ? (
+                          <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700">
+                            已精确定位
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
+                            仅页码定位
+                          </span>
+                        )}
+                      </div>
+
+                      <label className="mt-4 block space-y-1.5">
+                        <span className="text-xs font-semibold text-slate-500">
+                          问题
+                        </span>
+                        <textarea
+                          value={sourceCard.question}
+                          onChange={(event) =>
+                            updateCard(
+                              sourceCard.id,
+                              'question',
+                              event.target.value,
+                            )
+                          }
+                          className={`${inputClass} min-h-24 resize-y`}
+                        />
+                      </label>
+                      <label className="mt-3 block space-y-1.5">
+                        <span className="text-xs font-semibold text-slate-500">
+                          答案
+                        </span>
+                        <textarea
+                          value={sourceCard.answer}
+                          onChange={(event) =>
+                            updateCard(
+                              sourceCard.id,
+                              'answer',
+                              event.target.value,
+                            )
+                          }
+                          className={`${inputClass} min-h-28 resize-y`}
+                        />
+                      </label>
+
+                      {sourceCard.sourceQuote && (
+                        <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                          <p className="text-[11px] font-bold text-blue-700">
+                            提取时引用的原文
+                          </p>
+                          <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-line text-xs leading-relaxed text-blue-900">
+                            {sourceCard.sourceQuote}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="mt-4 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setFocusSource((current) => !current)}
+                          disabled={!sourceCard.sourceRects?.length}
+                          className={buttonSecondary}
+                        >
+                          <Focus size={15} />
+                          {focusSource ? '取消遮罩' : '聚焦原文'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setIsSelectingSource((current) => !current)
+                          }
+                          className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
+                            isSelectingSource
+                              ? 'border-blue-500 bg-blue-50 text-blue-700'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <MousePointer2 size={15} />
+                          {isSelectingSource ? '取消框选' : '重新框选'}
+                        </button>
+                      </div>
+                      {sourceCard.sourceRects?.length ? (
+                        <button
+                          type="button"
+                          onClick={clearSourceRects}
+                          className="mt-2 w-full rounded-lg px-3 py-2 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                        >
+                          清除精确定位
+                        </button>
+                      ) : (
+                        <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
+                          暂未找到精确坐标。已跳到来源页，你可以点击“重新框选”，在页面上拖出原文区域。
+                        </p>
+                      )}
+                    </section>
+                  ) : (
+                    <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
+                      添加或选择一张卡片后，即可在 PDF 上绑定原文。
+                    </section>
+                  )}
+                </aside>
+              </div>
+            ) : null}
           </main>
         </div>
       </div>

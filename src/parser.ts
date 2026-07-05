@@ -337,11 +337,23 @@ export function cleanTextbookText(value: string): string {
     )
     .replace(/([A-Za-z0-9])[ \t]+(?=[\u3400-\u9fff])/g, '$1')
     .replace(/[ \t]*([，。；：！？、])[ \t]*/g, '$1')
+    .replace(
+      /([\u3400-\u9fff）)])[ \t]*,[ \t]*(?=[\u3400-\u9fff（(])/g,
+      '$1，',
+    )
+    .replace(
+      /([\u3400-\u9fff）)])[ \t]*;[ \t]*(?=[\u3400-\u9fff（(])/g,
+      '$1；',
+    )
     .replace(/[ \t]+(?=[（(《〈“”])/g, '')
     .replace(/([（(《〈“”])[ \t]+/g, '$1')
     .replace(/[ \t]+([）)》〉”])/g, '$1')
     .replace(/香气物联网\s*P?D?G?/g, '')
     .replace(/农业生态学\s*$/gm, '')
+    .replace(/[焉遂通进]传(?=学|的)/g, '遗传')
+    .replace(/时绿体/g, '叶绿体')
+    .replace(/牛物体/g, '生物体')
+    .replace(/Go(?=期)/g, 'G0')
     .replace(/^\s*[·•]\s*\d+\s*[·•]?\s*$/gm, '')
     .replace(/^\s*\d+\s*$/gm, '')
     .replace(/-{2,}\s*PAGE\s*\d+.*-{2,}/gi, '')
@@ -499,8 +511,13 @@ function headingTopic(heading: string): string {
     .trim();
 }
 
-function cleanSubject(value: string, fallback = ''): string {
+function cleanSubject(
+  value: string,
+  fallback = '',
+  allowFallback = false,
+): string {
   let subject = value
+    .replace(/\s+[oO0]\s*$/g, '')
     .replace(
       /[（(〈]?[A-Za-z][A-Za-z0-9 .,'’/_-]{1,60}[）)〉]?\s*$/i,
       '',
@@ -509,6 +526,7 @@ function cleanSubject(value: string, fallback = ''): string {
     .replace(/^(?:可将|可把|将|把)\s*/, '')
     .replace(/[，。；：:“”"《》]/g, '')
     .replace(/(?:大致|大体|概|主要|都)$/g, '')
+    .replace(/是$/g, '')
     .trim();
 
   if (
@@ -518,15 +536,22 @@ function cleanSubject(value: string, fallback = ''): string {
     subject = subject.slice(0, subject.length / 2);
   }
   if (/^(?:其|它|该|这种|这些|此)(?:的)?/.test(subject)) {
+    if (!allowFallback || !fallback) return '';
     subject = fallback;
   }
+  const singleCharacterTerm = /^(?:核|膜|酶)$/u.test(subject);
   if (
-    subject.length < 2 ||
+    (subject.length < 2 && !singleCharacterTerm) ||
     subject.length > 28 ||
-    !/[\u4e00-\u9fff]{2}/.test(subject) ||
-    /(?:本章|本节|下文|如下|上述|未识别|虽然|因为|不论|但是|现已|已经|试验|研究|证明|表明|认为|可见|为了|外上间|厂面)/.test(
+    !/[\u4e00-\u9fff]/.test(subject) ||
+    /(?:本章|本节|下文|如下|上述|未识别|正文|全书|本书|本教材|本版|前言|编者|读者|出版|修订|第[一二三四五六七八九十百千\d]+部分|首先|其次|最后|大致可以|不仅|除了|可比|虽然|因为|不论|但是|现已|已经|试验|研究|证明|表明|认为|可见|为了|介绍|共分|论说|外上间|厂面)/.test(
       subject,
-    )
+    ) ||
+    /^在/.test(subject) ||
+    /^(?:第[一二三四五六七八九十百千\d]+|一方面|另一方面)$/.test(
+      subject,
+    ) ||
+    (subject.includes('是') && subject.length > 4)
   ) {
     return '';
   }
@@ -549,7 +574,7 @@ function isUsableSentence(sentence: string): boolean {
     chineseCount >= 10 &&
     chineseCount / semanticText.length >= 0.45 &&
     unusualCount / sentence.length < 0.08 &&
-    !/(?:进行介绍|将在下文|本章主要|本节主要|学习目标|思考题|复习题|如图|见图|图\d|表\d)/.test(
+    !/(?:进行介绍|将在下文|本章主要|本节主要|学习目标|思考题|复习题|如图|见图|图\d|表\d|正文共分|全书(?:共|分|包括)|本书(?:共|分|包括)|本版|再版|前言|编者|出版|修订|读者|第[一二三四五六七八九十百千\d]+部分(?:介绍|包括))/.test(
       sentence,
     )
   );
@@ -640,7 +665,10 @@ function candidateFromSentence(
   const classificationMatch = normalized.match(
     /^(?:根据|按照)?([^，。；]{2,24})[，,]?(?:可将|可把|将|把)?([^，。；]{2,30}?)(?:划分为|分为|可分为)([^。；]{4,220})[。；]?$/,
   );
-  if (classificationMatch) {
+  if (
+    classificationMatch &&
+    !/(?:片面|错误|不能|不应|并非|不是|绝对化)/.test(normalized)
+  ) {
     const criterion = cleanSubject(classificationMatch[1]);
     const subject = cleanSubject(classificationMatch[2], contextTopic);
     if (subject) {
@@ -693,7 +721,7 @@ function candidateFromSentence(
     /^([^，。；]{2,28}?)的(结构|功能|作用|意义|特点|特征|性质)(?:是|为|包括|主要是|主要包括)?([^。；]{4,220})[。；]?$/,
   );
   if (aspectMatch) {
-    const subject = cleanSubject(aspectMatch[1], contextTopic);
+    const subject = cleanSubject(aspectMatch[1], contextTopic, true);
     const aspect = aspectMatch[2];
     if (subject) {
       return makeCandidate(
@@ -707,13 +735,35 @@ function candidateFromSentence(
     }
   }
 
+  const relationMatch = normalized.match(
+    /^([^，。；]{2,24}?)与([^，。；]{2,24}?)(?:之间)?(?:存在|具有|的)([^。；]{2,220}关系[^。；]*)[。；]?$/,
+  );
+  if (relationMatch) {
+    const left = cleanSubject(relationMatch[1], contextTopic);
+    const right = cleanSubject(relationMatch[2]);
+    if (left && right) {
+      return makeCandidate(
+        normalized,
+        `${left}与${right}有什么关系？`,
+        `${left}与${right}`,
+        '简答题',
+        88,
+        0.86,
+      );
+    }
+  }
+
   const containsMatch = normalized.match(
     /^([^，。；]{2,28}?)(?:含有|具有)([^。；]{5,220})[。；]?$/,
   );
   if (containsMatch) {
     const subject = cleanSubject(containsMatch[1], contextTopic);
     if (subject) {
-      const relation = normalized.includes('含有') ? '含有哪些重要成分' : '具有哪些特征';
+      const relation = normalized.includes('含有')
+        ? '含有哪些重要成分'
+        : containsMatch[2].includes('细胞结构')
+          ? '具有怎样的细胞结构'
+          : '具有哪些特征';
       return makeCandidate(
         normalized,
         `${subject}${relation}？`,
@@ -725,25 +775,14 @@ function candidateFromSentence(
     }
   }
 
-  const relationMatch = normalized.match(
-    /^([^，。；]{2,24}?)与([^，。；]{2,24}?)(?:之间)?(?:存在|具有|的)([^。；]{6,220}关系[^。；]*)[。；]?$/,
-  );
-  if (relationMatch) {
-    const left = cleanSubject(relationMatch[1], contextTopic);
-    const right = cleanSubject(relationMatch[2]);
-    if (left && right) {
-      return makeCandidate(
-        normalized,
-        `${left}与${right}有什么关系？`,
-        `${left}与${right}`,
-        '简答题',
-        84,
-        0.8,
-      );
-    }
-  }
-
   return null;
+}
+
+function isEditorialPage(text: string): boolean {
+  const headingArea = text.split('\n').slice(0, 14).join('');
+  return /(?:前言|序言|再版说明|出版说明|编写说明|内容提要|目录)/.test(
+    headingArea,
+  );
 }
 
 function slimAnswer(value: string, maxLength: number): string {
@@ -829,6 +868,7 @@ export function buildTextbookCards(
   pages.forEach((page) => {
     const text = cleanTextbookText(page.text);
     if (!text) return;
+    if (isEditorialPage(text)) return;
 
     const lines = text
       .split('\n')

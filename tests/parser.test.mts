@@ -251,3 +251,54 @@ test('normalizes OCR character spacing before extracting textbook cards', () => 
   );
   assert.ok(cards.every((card) => !card.answer.includes('线 粒 体')));
 });
+
+test('keeps knowledge cards while rejecting preface and discourse trivia', () => {
+  const cards = buildTextbookCards(
+    [
+      {
+        page: 4,
+        text: `第一版前言
+        正文共分十三章，大致可以分为五个部分。
+        第五部分包括两个方面，一章介绍细胞质遗传，另一章介绍进化机理。
+        第二部分介绍数量性状遗传的特征及其研究方法。`,
+      },
+      {
+        page: 16,
+        text: '遗传和变异的表现都与环境具有不可分割的关系。',
+      },
+      {
+        page: 17,
+        text: `但是，这样把生物体绝对化地划分为种质和体质是片面的。
+        这些论说虽然具有某些唯心主义成分，但是推动了后续研究。`,
+      },
+      {
+        page: 29,
+        text: '首先是细胞体积的增加；其次是遗传物质的复制；第三是细胞分裂。',
+      },
+      {
+        page: 30,
+        text: `不分裂细胞则停留在 G 期，也称为 Go 期。
+        根据间期 DNA 合成的时期，间期中又可分为三个时期。`,
+      },
+    ],
+    220,
+    5,
+  );
+  const questions = cards.map((card) => card.question);
+
+  assert.ok(
+    questions.includes('遗传和变异的表现与环境有什么关系？'),
+  );
+  assert.ok(
+    questions.includes('按间期DNA合成的时期，间期中又可分为哪几类？'),
+  );
+  assert.ok(questions.includes('什么是G0期？'));
+  assert.ok(
+    questions.every(
+      (question) =>
+        !/(?:正文|全书|部分包括|第[一二三四五六七八九十]+部分|首先|什么是第三|绝对化|这些论说)/.test(
+          question,
+        ),
+    ),
+  );
+});

@@ -1385,6 +1385,7 @@ export default function App() {
                 <ul className="list-inside list-disc space-y-1.5 opacity-90">
                   <li>扫描教材优先使用“自动判断”，仅图片页会 OCR。</li>
                   <li>首次 OCR 会下载中文模型，之后浏览器会缓存。</li>
+                  <li>知识内容优先，前言、目录、版本与教材编排不会制卡。</li>
                   <li>建议按章处理，并在导出前人工精修。</li>
                 </ul>
               ) : (

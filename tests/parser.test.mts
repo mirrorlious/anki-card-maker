@@ -7,6 +7,7 @@ import {
   DEFAULT_PARSER_TEMPLATE,
   GENERAL_PARSER_TEMPLATE,
   normalizeExamText,
+  pagesFromExtractedText,
   parseExamCards,
 } from '../src/parser.ts';
 
@@ -140,4 +141,65 @@ test('normalizes malformed square-bracket labels and page noise', () => {
   assert.doesNotMatch(normalized, /第 12 页/);
   assert.match(normalized, /【答案】A/);
   assert.match(normalized, /【解析】内容/);
+});
+
+test('generates specific textbook questions instead of generic chapter prompts', () => {
+  const cards = buildTextbookCards(
+    [
+      {
+        page: 21,
+        text: `第一节“细胞的结构和功能所有生物都具有一定的细胞结构，但在细胞结构的组成上，各种生物是不同的。根据细胞结构的复杂程度，可把生物界的细胞概分为两类，原核细胞和真核细胞。必要对细胞的结构和功能、细胞的分裂方式以及生物繁殖方式与遗传表现的关系进行介绍。`,
+      },
+      {
+        page: 23,
+        text: `线粒体含有大量的脂类，主要是磷脂类，它是线粒体双膜结构的重要成分。线粒体是由内外两层膜组成，外膜光滑，内膜向内回旋折叠，形成许多横隔。`,
+      },
+      {
+        page: 25,
+        text: `在多数物种中，有一对形态和所含基因位点不同的同源染色体，称为性染色体。其余形态结构相同的染色体称为常染色体。`,
+      },
+    ],
+    220,
+    5,
+  );
+  const questions = cards.map((card) => card.question);
+
+  assert.ok(
+    questions.includes('按细胞结构的复杂程度，生物界的细胞可分为哪几类？'),
+  );
+  assert.ok(questions.includes('线粒体含有哪些重要成分？'));
+  assert.ok(questions.includes('线粒体由哪些部分组成？'));
+  assert.ok(questions.includes('什么是性染色体？'));
+  assert.ok(questions.includes('什么是常染色体？'));
+  assert.ok(
+    questions.every(
+      (question) =>
+        !question.includes('未识别章节') &&
+        !question.includes('简述其') &&
+        !question.includes('核心要点'),
+    ),
+  );
+  assert.ok(cards.every((card) => card.analysis === ''));
+  assert.ok(cards.every((card) => card.sourceQuote));
+  assert.equal(
+    new Set(questions.map((question) => question.replace(/\s/g, ''))).size,
+    questions.length,
+  );
+});
+
+test('restores PDF page boundaries when regenerating from saved extracted text', () => {
+  const pages = pagesFromExtractedText(`
+    --- PAGE 21 [ocr] ---
+    第一页正文。
+
+    --- PAGE 22 [text] ---
+    第二页正文。
+  `);
+
+  assert.deepEqual(
+    pages.map((page) => page.page),
+    [21, 22],
+  );
+  assert.match(pages[0].text, /第一页正文/);
+  assert.match(pages[1].text, /第二页正文/);
 });

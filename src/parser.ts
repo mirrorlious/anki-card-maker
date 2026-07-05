@@ -14,13 +14,6 @@ interface Section {
 }
 
 const SECTION_REGEX = /(?:^|\n)【(答案|考点|解析|结束)】/g;
-const KEYWORD_PATTERNS = [
-  /包括|组成|构成|分为|可分为|主要有/,
-  /特点|特征|性质|原则|规律/,
-  /作用|功能|意义|任务|方法|途径/,
-  /影响|原因|条件|机制|过程/,
-];
-
 let fallbackId = 0;
 
 export const DEFAULT_PARSER_TEMPLATE: ParserTemplate = {
@@ -337,6 +330,10 @@ function normalizeSpaces(value: string): string {
 
 export function cleanTextbookText(value: string): string {
   return normalizeSpaces(value)
+    .replace(/[`´]{1,}/g, '')
+    .replace(/\s+([，。；：！？])/g, '$1')
+    .replace(/([（《“])\s+/g, '$1')
+    .replace(/\s+([）》”])/g, '$1')
     .replace(/香气物联网\s*P?D?G?/g, '')
     .replace(/农业生态学\s*$/gm, '')
     .replace(/^\s*[·•]\s*\d+\s*[·•]?\s*$/gm, '')
@@ -348,28 +345,310 @@ export function cleanTextbookText(value: string): string {
 
 function splitSentences(value: string): string[] {
   return value
-    .replace(/([。！？；])/g, '$1\n')
+    .replace(/([。！？；])(?=\S)/g, '$1\n')
     .split('\n')
     .map((item) => item.trim())
-    .filter((item) => item.length >= 18);
+    .filter((item) => item.length >= 12);
 }
 
-function isChapterLine(line: string): boolean {
-  return /^第[一二三四五六七八九十百千\d]+章\s*.{0,50}$/.test(line.trim());
+interface ExtractedHeading {
+  body: string;
+  heading: string;
+  kind: 'chapter' | 'section';
 }
 
-function isSectionLine(line: string): boolean {
-  return /^第[一二三四五六七八九十百千\d]+节\s*.{0,50}$/.test(line.trim());
+interface TextbookCandidate {
+  answer: string;
+  confidence: number;
+  point: string;
+  question: string;
+  score: number;
+  sourceQuote: string;
+  type: string;
 }
 
-function isHeadingLine(line: string): boolean {
+function extractNumberedHeading(line: string): ExtractedHeading | null {
   const trimmed = line.trim();
+  const marker = trimmed.match(
+    /^(第[一二三四五六七八九十百千\d]+([章节]))\s*/,
+  );
+  if (!marker) return null;
+
+  const kind = marker[2] === '章' ? 'chapter' : 'section';
+  const remainder = trimmed.slice(marker[0].length).trim();
+  const quoted = remainder.match(/^[“"《]([^”"》]{2,40})[”"》]\s*/);
+  if (quoted) {
+    return {
+      heading: `${marker[1]} ${quoted[1].trim()}`,
+      body: remainder.slice(quoted[0].length).trim(),
+      kind,
+    };
+  }
+
+  const bodyStarters = [
+    '所有',
+    '一般',
+    '通常',
+    '根据',
+    '为了',
+    '不同',
+    '其中',
+    '当',
+    '在',
+    '由',
+    '其',
+    '它',
+    '该',
+  ];
+  const starterIndexes = bodyStarters
+    .map((starter) => remainder.indexOf(starter, 2))
+    .filter((index) => index >= 2);
+  const boundary = starterIndexes.length ? Math.min(...starterIndexes) : -1;
+  if (boundary !== -1) {
+    return {
+      heading: `${marker[1]} ${remainder
+        .slice(0, boundary)
+        .replace(/^[“"《]|[”"》]$/g, '')
+        .trim()}`,
+      body: remainder.slice(boundary).trim(),
+      kind,
+    };
+  }
+
+  if (remainder.length <= 32 && !/[。！？；]/.test(remainder)) {
+    return {
+      heading: `${marker[1]} ${remainder
+        .replace(/^[“"《]|[”"》]$/g, '')
+        .trim()}`,
+      body: '',
+      kind,
+    };
+  }
+  return null;
+}
+
+function extractMinorHeading(line: string): string | null {
+  const trimmed = line.trim();
+  if (trimmed.length > 36 || /[。！？；]$/.test(trimmed)) return null;
+  const match = trimmed.match(
+    /^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\d+[.、])\s*(\S.{1,30})$/,
+  );
+  return match?.[1]?.trim() ?? null;
+}
+
+function headingTopic(heading: string): string {
+  return heading
+    .replace(/^第[一二三四五六七八九十百千\d]+[章节]\s*/, '')
+    .replace(/^[“"《]|[”"》]$/g, '')
+    .trim();
+}
+
+function cleanSubject(value: string, fallback = ''): string {
+  let subject = value
+    .replace(/^(?:根据|按照|对于|关于|其中|一般(?:而言)?|通常|所谓)\s*/, '')
+    .replace(/^(?:可将|可把|将|把)\s*/, '')
+    .replace(/[，。；：:“”"《》]/g, '')
+    .replace(/(?:大致|大体|概|主要|都)$/g, '')
+    .trim();
+
+  if (/^(?:其|它|该|这种|这些|此)(?:的)?/.test(subject)) {
+    subject = fallback;
+  }
+  if (
+    subject.length < 2 ||
+    subject.length > 28 ||
+    !/[\u4e00-\u9fff]{2}/.test(subject) ||
+    /(?:本章|本节|下文|如下|上述|未识别)/.test(subject)
+  ) {
+    return '';
+  }
+  return subject;
+}
+
+function isUsableSentence(sentence: string): boolean {
+  const chineseCount = sentence.match(/[\u4e00-\u9fff]/g)?.length ?? 0;
+  const unusualCount =
+    sentence.match(/[^\u4e00-\u9fffA-Za-z0-9，。；：！？、（）()《》“”"·%+\-—\s]/g)
+      ?.length ?? 0;
   return (
-    trimmed.length <= 42 &&
-    /^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\d+[.、])\s*\S+/.test(
-      trimmed,
+    sentence.length >= 16 &&
+    sentence.length <= 320 &&
+    chineseCount >= 10 &&
+    chineseCount / sentence.length >= 0.45 &&
+    unusualCount / sentence.length < 0.08 &&
+    !/(?:进行介绍|将在下文|本章主要|本节主要|学习目标|思考题|复习题|如图|见图|图\d|表\d)/.test(
+      sentence,
     )
   );
+}
+
+function makeCandidate(
+  sentence: string,
+  question: string,
+  point: string,
+  type: string,
+  score: number,
+  confidence: number,
+): TextbookCandidate {
+  return {
+    question,
+    answer: sentence,
+    point,
+    type,
+    score,
+    confidence,
+    sourceQuote: sentence,
+  };
+}
+
+function candidateFromSentence(
+  sentence: string,
+  contextTopic: string,
+): TextbookCandidate | null {
+  if (!isUsableSentence(sentence)) return null;
+  const normalized = sentence.replace(/\s+/g, ' ').trim();
+
+  const namedMatch = normalized.match(
+    /^(.{10,240}?)(?:被称为|称为|叫作|叫做)([^，。；]{2,20})[。；]?$/,
+  );
+  if (namedMatch) {
+    const term = cleanSubject(namedMatch[2]);
+    if (term) {
+      return makeCandidate(
+        normalized,
+        `什么是${term}？`,
+        term,
+        '名词解释',
+        100,
+        0.9,
+      );
+    }
+  }
+
+  const definitionMatch = normalized.match(
+    /^([^，。；：]{2,26}?)(?:是指|指的是)([^。；]{8,260})[。；]?$/,
+  );
+  if (definitionMatch) {
+    const term = cleanSubject(definitionMatch[1], contextTopic);
+    if (term) {
+      return makeCandidate(
+        normalized,
+        `什么是${term}？`,
+        term,
+        '名词解释',
+        100,
+        0.94,
+      );
+    }
+  }
+
+  const classificationMatch = normalized.match(
+    /^(?:根据|按照)?([^，。；]{2,24})[，,]?(?:可将|可把|将|把)?([^，。；]{2,30}?)(?:划分为|分为|可分为)([^。；]{4,220})[。；]?$/,
+  );
+  if (classificationMatch) {
+    const criterion = cleanSubject(classificationMatch[1]);
+    const subject = cleanSubject(classificationMatch[2], contextTopic);
+    if (subject) {
+      return makeCandidate(
+        normalized,
+        `${criterion ? `按${criterion}，` : ''}${subject}可分为哪几类？`,
+        subject,
+        '简答题',
+        96,
+        0.9,
+      );
+    }
+  }
+
+  const compositionMatch = normalized.match(
+    /^([^，。；]{2,30}?)(?:是)?(?:主要)?由([^。；]{4,220}?)(?:组成|构成)(?:[，,][^。；]{4,180})?[。；]?$/,
+  );
+  if (compositionMatch) {
+    const subject = cleanSubject(compositionMatch[1], contextTopic);
+    if (subject) {
+      return makeCandidate(
+        normalized,
+        `${subject}由哪些部分组成？`,
+        subject,
+        '简答题',
+        94,
+        0.9,
+      );
+    }
+  }
+
+  const includeMatch = normalized.match(
+    /^([^，。；]{2,30}?)(?:主要)?(?:包括|包含)([^。；]{4,220})[。；]?$/,
+  );
+  if (includeMatch) {
+    const subject = cleanSubject(includeMatch[1], contextTopic);
+    if (subject) {
+      return makeCandidate(
+        normalized,
+        `${subject}包括哪些内容？`,
+        subject,
+        '简答题',
+        92,
+        0.86,
+      );
+    }
+  }
+
+  const aspectMatch = normalized.match(
+    /^([^，。；]{2,28}?)的(结构|功能|作用|意义|特点|特征|性质)(?:是|为|包括|主要是|主要包括)?([^。；]{4,220})[。；]?$/,
+  );
+  if (aspectMatch) {
+    const subject = cleanSubject(aspectMatch[1], contextTopic);
+    const aspect = aspectMatch[2];
+    if (subject) {
+      return makeCandidate(
+        normalized,
+        `${subject}的${aspect}是什么？`,
+        subject,
+        '简答题',
+        90,
+        0.86,
+      );
+    }
+  }
+
+  const containsMatch = normalized.match(
+    /^([^，。；]{2,28}?)(?:含有|具有)([^。；]{5,220})[。；]?$/,
+  );
+  if (containsMatch) {
+    const subject = cleanSubject(containsMatch[1], contextTopic);
+    if (subject) {
+      const relation = normalized.includes('含有') ? '含有哪些重要成分' : '具有哪些特征';
+      return makeCandidate(
+        normalized,
+        `${subject}${relation}？`,
+        subject,
+        '简答题',
+        86,
+        0.82,
+      );
+    }
+  }
+
+  const relationMatch = normalized.match(
+    /^([^，。；]{2,24}?)与([^，。；]{2,24}?)(?:之间)?(?:存在|具有|的)([^。；]{6,220}关系[^。；]*)[。；]?$/,
+  );
+  if (relationMatch) {
+    const left = cleanSubject(relationMatch[1], contextTopic);
+    const right = cleanSubject(relationMatch[2]);
+    if (left && right) {
+      return makeCandidate(
+        normalized,
+        `${left}与${right}有什么关系？`,
+        `${left}与${right}`,
+        '简答题',
+        84,
+        0.8,
+      );
+    }
+  }
+
+  return null;
 }
 
 function slimAnswer(value: string, maxLength: number): string {
@@ -384,6 +663,21 @@ function slimAnswer(value: string, maxLength: number): string {
   return `${sliced.slice(0, lastStop > 80 ? lastStop + 1 : maxLength)}……`;
 }
 
+export function pagesFromExtractedText(text: string): TextPage[] {
+  const marker =
+    /^[ \t]*--- PAGE (\d+)(?: \[[^\]]+\])? ---[ \t]*$/gim;
+  const matches = [...text.matchAll(marker)];
+  if (!matches.length) return [{ text }];
+
+  return matches.map((match, index) => ({
+    page: Number.parseInt(match[1], 10),
+    text: text.slice(
+      match.index + match[0].length,
+      matches[index + 1]?.index ?? text.length,
+    ),
+  }));
+}
+
 export function buildTextbookCards(
   pages: TextPage[],
   maxAnswerLength: number,
@@ -391,15 +685,45 @@ export function buildTextbookCards(
 ): Card[] {
   const cards: Card[] = [];
   const seen = new Set<string>();
-  let currentChapter = '未识别章节';
+  const repeatedMarginLines = new Map<string, number>();
+  let currentChapter = '';
   let currentHeading = '';
+
+  pages.forEach((page) => {
+    const lines = cleanTextbookText(page.text)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const margins = [...lines.slice(0, 2), ...lines.slice(-2)];
+    new Set(margins)
+      .forEach((line) => {
+        if (
+          line.length <= 60 &&
+          !extractNumberedHeading(line) &&
+          !extractMinorHeading(line)
+        ) {
+          repeatedMarginLines.set(
+            line,
+            (repeatedMarginLines.get(line) ?? 0) + 1,
+          );
+        }
+      });
+  });
+  const marginNoise =
+    pages.length >= 3
+      ? new Set(
+          [...repeatedMarginLines.entries()]
+            .filter(([, count]) => count >= 3)
+            .map(([line]) => line),
+        )
+      : new Set<string>();
 
   const push = (
     card: Omit<Card, 'id' | 'tags' | 'origin' | 'reviewStatus'> & {
       tags?: string[];
     },
   ): void => {
-    const key = `${card.question}|${card.answer.slice(0, 30)}`;
+    const key = card.question.replace(/[\s，。；：！？]/g, '').toLowerCase();
     if (seen.has(key) || card.question.length < 6 || card.answer.length < 14) {
       return;
     }
@@ -414,128 +738,91 @@ export function buildTextbookCards(
     const lines = text
       .split('\n')
       .map((line) => line.trim())
-      .filter(Boolean);
-    const pageStartCount = cards.length;
-    const paragraphs: string[] = [];
+      .filter((line) => line && !marginNoise.has(line));
+    const paragraphs: Array<{
+      chapter: string;
+      heading: string;
+      text: string;
+    }> = [];
     let buffer = '';
 
-    lines.forEach((line) => {
-      if (isChapterLine(line)) {
-        currentChapter = line;
-        currentHeading = '';
-        return;
-      }
-      if (isSectionLine(line) || isHeadingLine(line)) {
-        if (buffer) paragraphs.push(buffer);
-        buffer = '';
-        currentHeading = line.replace(
-          /^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\d+[.、])\s*/,
-          '',
-        );
-        return;
-      }
-      buffer += line;
-      if (/[。！？；]$/.test(line) || buffer.length >= 220) {
-        paragraphs.push(buffer);
-        buffer = '';
-      }
-    });
-    if (buffer) paragraphs.push(buffer);
-
-    paragraphs.forEach((paragraph) => {
-      if (cards.length - pageStartCount >= maxCardsPerPage) return;
-      const sentences = splitSentences(paragraph);
-      const joined = slimAnswer(
-        sentences.slice(0, 3).join(''),
-        maxAnswerLength,
-      );
-      const chapter = currentChapter;
-      const topic =
-        currentHeading ||
-        chapter.replace(/^第[一二三四五六七八九十百千\d]+章\s*/, '') ||
-        '本节内容';
-      const definitionMatch = paragraph.match(
-        /([\u4e00-\u9fa5A-Za-z0-9（）()·—-]{2,22})(?:是指|是|指)([^。！？；]{18,220}[。！？；]?)/,
-      );
-
-      if (definitionMatch) {
-        const term = definitionMatch[1]
-          .replace(/^[的地得和与及其这种一个一种]+/, '')
-          .replace(/[，。；：:、]/g, '')
-          .trim();
-        const connector = paragraph.includes('是指')
-          ? '是指'
-          : paragraph.includes('指')
-            ? '指'
-            : '是';
-        const definition = slimAnswer(
-          `${term}${connector}${definitionMatch[2]}`,
-          maxAnswerLength,
-        );
-        if (term.length >= 2 && term.length <= 18) {
-          push({
-            question: `什么是${term}？`,
-            options: '',
-            answer: definition,
-            point: topic,
-            analysis: '由教材正文自动抽取定义句，建议预览后精修。',
-            type: '名词解释',
-            chapter,
-            sourcePage: page.page,
-            tags: ['教材OCR', '名词解释', chapter],
-          });
-        }
-      }
-
-      if (cards.length - pageStartCount >= maxCardsPerPage) return;
-      if (
-        KEYWORD_PATTERNS.some((pattern) => pattern.test(paragraph)) &&
-        joined.length >= 35
-      ) {
-        const questionPrefix = /包括|组成|构成|分为|可分为|主要有/.test(
-          paragraph,
-        )
-          ? '简述其组成或分类。'
-          : /作用|功能|意义|任务|方法|途径/.test(paragraph)
-            ? '简述其作用、意义或方法。'
-            : '简述教材中的核心要点。';
-        push({
-          question: `${topic}：${questionPrefix}`,
-          options: '',
-          answer: joined,
-          point: topic,
-          analysis: '命中“组成/特点/作用/影响”等高频考点词后自动生成。',
-          type: '简答题',
-          chapter,
-          sourcePage: page.page,
-          tags: ['教材OCR', '简答', chapter],
+    const flush = () => {
+      if (buffer.trim()) {
+        paragraphs.push({
+          chapter: currentChapter,
+          heading: currentHeading,
+          text: buffer.trim(),
         });
       }
+      buffer = '';
+    };
 
-      if (cards.length - pageStartCount >= maxCardsPerPage) return;
-      const fillSentence = sentences.find(
-        (sentence) =>
-          /是|包括|分为|具有/.test(sentence) && sentence.length <= 120,
-      );
-      if (fillSentence) {
-        const fillTerm =
-          definitionMatch?.[1]?.replace(/[，。；：:、]/g, '').trim() ||
-          topic.slice(0, 12);
-        if (fillTerm.length >= 2 && fillSentence.includes(fillTerm)) {
-          push({
-            question: fillSentence.replace(fillTerm, '____'),
-            options: '',
-            answer: fillTerm,
-            point: topic,
-            analysis: fillSentence,
-            type: '填空题',
-            chapter,
-            sourcePage: page.page,
-            tags: ['教材OCR', '填空', chapter],
-          });
+    lines.forEach((rawLine) => {
+      let line = rawLine;
+      const numberedHeading = extractNumberedHeading(line);
+      if (numberedHeading) {
+        flush();
+        if (numberedHeading.kind === 'chapter') {
+          currentChapter = numberedHeading.heading;
+          currentHeading = '';
+        } else {
+          currentHeading = numberedHeading.heading;
+        }
+        line = numberedHeading.body;
+        if (!line) return;
+      } else {
+        const minorHeading = extractMinorHeading(line);
+        if (minorHeading) {
+          flush();
+          currentHeading = minorHeading;
+          return;
         }
       }
+
+      buffer += line;
+      if (/[。！？；]$/.test(line) || buffer.length >= 600) {
+        flush();
+      }
     });
+    flush();
+
+    const candidates: Array<
+      TextbookCandidate & { chapter: string; heading: string }
+    > = [];
+    paragraphs.forEach((paragraph) => {
+      const contextTopic =
+        headingTopic(paragraph.heading) || headingTopic(paragraph.chapter);
+      splitSentences(paragraph.text).forEach((sentence) => {
+        const candidate = candidateFromSentence(sentence, contextTopic);
+        if (candidate) {
+          candidates.push({
+            ...candidate,
+            chapter: paragraph.chapter,
+            heading: paragraph.heading,
+          });
+        }
+      });
+    });
+
+    candidates
+      .sort((left, right) => right.score - left.score)
+      .slice(0, maxCardsPerPage)
+      .forEach((candidate) => {
+        const chapter = candidate.chapter || candidate.heading;
+        push({
+          question: candidate.question,
+          options: '',
+          answer: slimAnswer(candidate.answer, maxAnswerLength),
+          point: candidate.point,
+          analysis: '',
+          type: candidate.type,
+          chapter,
+          sourcePage: page.page,
+          tags: ['教材提取', candidate.type, chapter].filter(Boolean),
+          sourceQuote: candidate.sourceQuote,
+          confidence: candidate.confidence,
+        });
+      });
   });
 
   return cards;

@@ -33,6 +33,7 @@ import {
   createCard,
   DEFAULT_PARSER_TEMPLATE,
   GENERAL_PARSER_TEMPLATE,
+  pagesFromExtractedText,
   parseExamCards,
   validateParserTemplate,
 } from './parser';
@@ -43,9 +44,9 @@ import type {
   AiSettings,
   Card,
   DraftData,
-  ExtractedPage,
   ParserTemplate,
   PdfProgress,
+  TextPage,
 } from './types';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -237,7 +238,7 @@ export default function App() {
 
   const generateCards = (
     text: string,
-    extractedPages?: ExtractedPage[],
+    extractedPages?: TextPage[],
   ): Card[] => {
     if (settings.parseMode === 'exam') {
       const result = parseExamCards(text, settings.parserTemplate);
@@ -263,7 +264,7 @@ export default function App() {
     );
     if (!generated.length) {
       throw new Error(
-        '没有生成教材卡片。请选择正文页、提高 OCR 清晰度，或粘贴包含完整定义和要点的正文。',
+        '严格质量规则下没有生成可靠卡片。请选择正文页、提高 OCR 清晰度，或使用 AI 辅助生成候选卡。',
       );
     }
     return generated;
@@ -273,7 +274,12 @@ export default function App() {
     setErrorMessage('');
     setStatusMessage('正在生成卡片...');
     try {
-      const generated = generateCards(inputText);
+      const generated = generateCards(
+        inputText,
+        settings.parseMode === 'textbook'
+          ? pagesFromExtractedText(inputText)
+          : undefined,
+      );
       replaceCards(generated);
       setStatusMessage(`完成：生成 ${generated.length} 张卡片。`);
     } catch (error) {
@@ -1266,6 +1272,15 @@ export default function App() {
                     共 {cards.length} 张
                     {pendingCount > 0 ? ` · 待审核 ${pendingCount}` : ''}
                   </span>
+                  {inputText.trim() && cards.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={processPastedText}
+                      className={buttonSecondary}
+                    >
+                      <RefreshCw size={16} /> 按新规则重新识别
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={addBlankCard}

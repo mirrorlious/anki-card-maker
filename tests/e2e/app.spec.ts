@@ -26,6 +26,40 @@ function createTextPdf(text: string): Buffer {
   return Buffer.from(pdf);
 }
 
+test('imports multiple formats through drag and drop', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(async () => {
+    localStorage.clear();
+    await new Promise<void>((resolve) => {
+      const request = indexedDB.deleteDatabase('anki-card-maker');
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+      request.onblocked = () => resolve();
+    });
+  });
+  await page.reload();
+
+  await page.locator('label[for="pdf-upload"]').evaluate((dropZone) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(
+      new File(['记忆是过去经验在头脑中的反映。'], '心理学.md', {
+        type: 'text/markdown',
+      }),
+    );
+    dataTransfer.items.add(
+      new File([JSON.stringify({ chapter: '认知', point: '注意' })], '知识点.json', {
+        type: 'application/json',
+      }),
+    );
+    dropZone.dispatchEvent(
+      new DragEvent('drop', { bubbles: true, dataTransfer }),
+    );
+  });
+
+  await expect(page.getByRole('heading', { name: '2 个文件' })).toBeVisible();
+  await expect(page.getByText('心理学.md、知识点.json')).toBeVisible();
+});
+
 test('creates, edits, restores and exports cards', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(async () => {
@@ -68,6 +102,8 @@ test('creates, edits, restores and exports cards', async ({ page }) => {
   await expect(page.getByText('共 0 张')).toBeVisible();
   await page.getByRole('button', { name: '撤销删除' }).click();
   await expect(page.getByText('共 1 张')).toBeVisible();
+
+  await page.getByRole('button', { name: /导出牌组/ }).click();
 
   const textDownloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Anki TXT' }).click();
@@ -126,11 +162,15 @@ test('keeps extracted PDF text when strict textbook rules generate no cards', as
   await expect(
     page.getByRole('button', { name: '重新生成本地卡片' }),
   ).toBeVisible();
+  await page.getByRole('button', { name: /导入资料/ }).click();
   await page.getByRole('button', { name: '文本粘贴' }).click();
   await expect(page.getByPlaceholder(/粘贴/)).toContainText(
     'Preface and publication information only.',
   );
 
+  await page
+    .getByRole('button', { name: '生成卡片 本地规则或 AI' })
+    .click();
   await page.getByRole('button', { name: '添加卡片' }).click();
   await page.getByRole('button', { name: 'PDF 对照' }).click();
   await expect(page.getByLabel('PDF 页码')).toHaveAttribute('max', '1');
@@ -225,14 +265,97 @@ test('uses a custom AI endpoint and requires candidate approval', async ({
     .fill('test-secret');
   await page.getByRole('button', { name: '测试连接' }).click();
   await expect(page.getByText(/AI 接口连接成功/)).toBeVisible();
+  await expect(page.getByText('响应模型')).toBeVisible();
+  await expect(page.getByText('连接耗时')).toBeVisible();
+  await page.getByRole('button', { name: '完成配置' }).click();
 
   await page.getByRole('button', { name: '生成候选卡' }).click();
   await expect(page.getByText(/待审核 1/)).toBeVisible();
   await expect(page.getByText('AI 候选')).toBeVisible();
   await page.getByRole('button', { name: '待审核 · 点击批准' }).click();
   await expect(page.getByText(/待审核 1/)).toHaveCount(0);
+  await page
+    .getByRole('button', { name: /生成卡片/ })
+    .filter({ hasText: '本地规则或 AI' })
+    .click();
+  await page.getByRole('button', { name: '生成候选卡' }).click();
+  await expect(page.getByRole('status')).toContainText('来自本地缓存');
   expect(authorizationHeaders).toEqual([
     'Bearer test-secret',
     'Bearer test-secret',
   ]);
+});
+
+test('blocks incomplete cards until quality issues are fixed', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '文本粘贴' }).click();
+  await page.getByPlaceholder(/粘贴/).fill('用于手工制卡的参考原文。');
+  await page
+    .getByRole('button', { name: /生成卡片/ })
+    .filter({ hasText: '本地规则或 AI' })
+    .click();
+  await page.getByRole('button', { name: '添加卡片' }).click();
+
+  await expect(page.getByRole('button', { name: /质量问题 1/ })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /导出牌组/ }),
+  ).toBeDisabled();
+  await expect(page.getByText(/问题为空，必须补充/)).toBeVisible();
+  await expect(page.getByText(/答案为空，必须补充/)).toBeVisible();
+
+  const editors = page.locator('article textarea');
+  await editors.nth(0).fill('测试问题是什么？');
+  await editors.nth(1).fill('这是完整答案。');
+  await expect(page.getByRole('button', { name: /质量问题 0/ })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /导出牌组/ }),
+  ).toBeEnabled();
+});
+
+test('backs up, restores, searches and selects the current review result', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '文本粘贴' }).click();
+  await page.getByPlaceholder(/粘贴/).fill('工作区备份与批量审核测试原文。');
+  await page
+    .getByRole('button', { name: /生成卡片/ })
+    .filter({ hasText: '本地规则或 AI' })
+    .click();
+  await page.getByRole('button', { name: '添加卡片' }).click();
+  let articles = page.locator('main article');
+  await articles.nth(0).locator('textarea').nth(0).fill('第一张备份问题？');
+  await articles.nth(0).locator('textarea').nth(1).fill('第一张答案。');
+
+  await page.getByRole('button', { name: '添加卡片' }).click();
+  articles = page.locator('main article');
+  await articles.nth(0).locator('textarea').nth(0).fill('第二张搜索关键字？');
+  await articles.nth(0).locator('textarea').nth(1).fill('第二张答案。');
+
+  await page.getByLabel('搜索卡片').fill('搜索关键字');
+  await expect(page.getByText('显示 1 / 2 张')).toBeVisible();
+  await page.getByRole('button', { name: '选择当前结果' }).click();
+  await expect(page.getByText('已选 1 张')).toBeVisible();
+  await page.getByLabel('卡片排序').selectOption('type');
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '备份', exact: true }).click();
+  const download = await downloadPromise;
+  const backupPath = await download.path();
+  expect(backupPath).not.toBeNull();
+  expect(download.suggestedFilename()).toMatch(/Anki工作区_.*\.json$/);
+  const backupText = await readFile(backupPath!, 'utf8');
+  expect(backupText).toContain('anki-card-maker-workspace');
+  expect(backupText).not.toContain('apiKey');
+
+  await page.getByLabel('搜索卡片').fill('');
+  articles = page.locator('main article');
+  await articles.nth(0).locator('textarea').nth(0).fill('已被修改的问题？');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByLabel('选择工作区备份').setInputFiles(backupPath!);
+  await expect(
+    page.locator('main article').nth(0).locator('textarea').nth(0),
+  ).toHaveValue('第二张搜索关键字？');
+  await expect(page.getByText(/已恢复 2 张卡片/)).toBeVisible();
+  await expect(page.getByLabel('搜索卡片')).toHaveValue('');
 });

@@ -1,4 +1,11 @@
 import { createCard } from './parser.ts';
+import {
+  AiRequestError,
+  requestChatCompletion,
+  resolveChatEndpoint,
+  type AiConnectionResult,
+  type AiRequestEvent,
+} from './aiClient.ts';
 import type {
   AiGenerationResult,
   AiProgress,
@@ -15,29 +22,12 @@ interface GenerateWithAiOptions {
   signal: AbortSignal;
   onProgress?: (progress: AiProgress) => void;
   fetchImpl?: typeof fetch;
+  retryDelayMs?: number;
 }
 
-interface ChatResponse {
-  choices?: Array<{
-    message?: {
-      content?: unknown;
-    };
-  }>;
-  model?: string;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-  };
-  error?: {
-    message?: string;
-  };
-}
+export { resolveChatEndpoint } from './aiClient.ts';
 
-interface CompletionResult {
-  content: string;
-  model: string;
-  usage: AiUsage;
-}
+const PROMPT_VERSION = 'cards-v2';
 
 const JSON_EXAMPLE = `{
   "cards": [
@@ -68,24 +58,6 @@ function throwIfAborted(signal: AbortSignal): void {
 function positiveInt(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-export function resolveChatEndpoint(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, '');
-  if (!trimmed) throw new Error('Base URL 不能为空。');
-
-  let url: URL;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    throw new Error('Base URL 格式无效。');
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new Error('Base URL 仅支持 HTTP 或 HTTPS。');
-  }
-  return /\/chat\/completions$/i.test(url.pathname)
-    ? url.toString()
-    : `${trimmed}/chat/completions`;
 }
 
 export function splitTextForAi(text: string, chunkSize: number): string[] {
@@ -126,106 +98,6 @@ export function splitTextForAi(text: string, chunkSize: number): string[] {
   });
   flush();
   return chunks;
-}
-
-function contentFromMessage(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (
-          typeof part === 'object' &&
-          part !== null &&
-          'text' in part &&
-          typeof part.text === 'string'
-        ) {
-          return part.text;
-        }
-        return '';
-      })
-      .join('');
-  }
-  return '';
-}
-
-function extractApiError(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as ChatResponse;
-    return parsed.error?.message?.slice(0, 300) || body.slice(0, 300);
-  } catch {
-    return body.slice(0, 300);
-  }
-}
-
-async function requestCompletion(
-  config: AiClientConfig,
-  messages: Array<{ role: 'system' | 'user'; content: string }>,
-  signal: AbortSignal,
-  maxTokens: number,
-  fetchImpl: typeof fetch,
-): Promise<CompletionResult> {
-  throwIfAborted(signal);
-  const endpoint = resolveChatEndpoint(config.baseUrl);
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (config.apiKey.trim()) {
-    headers.Authorization = `Bearer ${config.apiKey.trim()}`;
-  }
-
-  let response: Response;
-  try {
-    response = await fetchImpl(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: config.model.trim(),
-        messages,
-        stream: false,
-        max_tokens: maxTokens,
-        ...(config.jsonMode
-          ? { response_format: { type: 'json_object' } }
-          : {}),
-      }),
-      signal,
-    });
-  } catch (error) {
-    if (signal.aborted) throw abortError();
-    throw new Error(
-      `无法连接 AI 接口。请检查 Base URL、网络和浏览器跨域权限：${(error as Error).message}`,
-      { cause: error },
-    );
-  }
-
-  const body = await response.text();
-  if (!response.ok) {
-    const detail = extractApiError(body);
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(`API Key 无效或没有权限：${detail}`);
-    }
-    if (response.status === 429) {
-      throw new Error(`接口请求过于频繁或余额不足：${detail}`);
-    }
-    throw new Error(`AI 接口返回 ${response.status}：${detail}`);
-  }
-
-  let parsed: ChatResponse;
-  try {
-    parsed = JSON.parse(body) as ChatResponse;
-  } catch {
-    throw new Error('AI 接口没有返回兼容的 Chat Completions JSON。');
-  }
-  const content = contentFromMessage(parsed.choices?.[0]?.message?.content);
-  if (!content.trim()) throw new Error('AI 返回了空内容。');
-
-  return {
-    content,
-    model: parsed.model || config.model,
-    usage: {
-      promptTokens: parsed.usage?.prompt_tokens ?? 0,
-      completionTokens: parsed.usage?.completion_tokens ?? 0,
-    },
-  };
 }
 
 function parseJsonObject(content: string): Record<string, unknown> {
@@ -329,13 +201,51 @@ JSON 格式示例：
 ${JSON_EXAMPLE}`;
 }
 
+function fallbackHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export async function createAiGenerationCacheKey(
+  source: string,
+  config: AiSettings,
+): Promise<string> {
+  const value = JSON.stringify({
+    promptVersion: PROMPT_VERSION,
+    source: source.replace(/\r\n?/g, '\n').trim(),
+    provider: config.provider,
+    endpoint: resolveChatEndpoint(config.baseUrl),
+    model: config.model.trim(),
+    jsonMode: config.jsonMode,
+    chunkSize: positiveInt(config.chunkSize, 8000),
+    maxChunks: positiveInt(config.maxChunks, 8),
+    cardsPerChunk: positiveInt(config.cardsPerChunk, 8),
+    customInstructions: config.customInstructions.trim(),
+  });
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(value),
+    );
+    return `ai-${Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')}`;
+  }
+  return `ai-${fallbackHash(value)}`;
+}
+
 export async function testAiConnection(
   config: AiClientConfig,
   signal: AbortSignal,
   fetchImpl: typeof fetch = fetch,
-): Promise<string> {
-  if (!config.model.trim()) throw new Error('模型名称不能为空。');
-  const result = await requestCompletion(
+  onEvent?: (event: AiRequestEvent) => void,
+): Promise<AiConnectionResult> {
+  const startedAt = Date.now();
+  const result = await requestChatCompletion(
     config,
     [
       {
@@ -347,12 +257,19 @@ export async function testAiConnection(
         content: '请返回 JSON：{"status":"ok"}',
       },
     ],
-    signal,
-    64,
-    fetchImpl,
+    {
+      signal,
+      maxTokens: 64,
+      fetchImpl,
+      onEvent,
+    },
   );
   parseJsonObject(result.content);
-  return result.model;
+  return {
+    endpoint: result.endpoint,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+    model: result.model,
+  };
 }
 
 export async function generateCardsWithAi(
@@ -375,7 +292,9 @@ export async function generateCardsWithAi(
   const fetchImpl = options.fetchImpl ?? fetch;
   const cards: Card[] = [];
   const usage: AiUsage = { promptTokens: 0, completionTokens: 0 };
+  const failedChunks: AiGenerationResult['failedChunks'] = [];
   let skippedChunks = 0;
+  let retriedRequests = 0;
 
   for (let index = 0; index < chunks.length; index += 1) {
     throwIfAborted(options.signal);
@@ -383,13 +302,14 @@ export async function generateCardsWithAi(
       completed: index,
       total: chunks.length,
       detail: `正在处理第 ${index + 1} 个文本块`,
+      stage: 'preparing',
     });
 
     let chunkCards: Card[] = [];
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let parseAttempt = 0; parseAttempt < 2; parseAttempt += 1) {
       try {
-        const result = await requestCompletion(
+        const result = await requestChatCompletion(
           config,
           [
             {
@@ -404,24 +324,57 @@ export async function generateCardsWithAi(
               content: `以下是第 ${index + 1}/${chunks.length} 段原文。请从中生成候选卡并输出 JSON：\n\n<source>\n${chunks[index]}\n</source>`,
             },
           ],
-          options.signal,
-          Math.max(1200, cardsPerChunk * 350),
-          fetchImpl,
+          {
+            signal: options.signal,
+            maxTokens: Math.max(1200, cardsPerChunk * 350),
+            fetchImpl,
+            retryDelayMs: options.retryDelayMs,
+            onEvent: (event) => {
+              options.onProgress?.({
+                completed: index,
+                total: chunks.length,
+                detail:
+                  event.phase === 'retrying'
+                    ? `第 ${index + 1} 块请求失败，正在自动重试`
+                    : `正在请求第 ${index + 1} 个文本块`,
+                stage: event.phase,
+                attempt: event.attempt,
+                maxAttempts: event.maxAttempts,
+              });
+            },
+          },
         );
+        retriedRequests += result.retries + (parseAttempt > 0 ? 1 : 0);
         usage.promptTokens += result.usage.promptTokens;
         usage.completionTokens += result.usage.completionTokens;
+        options.onProgress?.({
+          completed: index,
+          total: chunks.length,
+          detail: `正在校验第 ${index + 1} 个文本块的返回结果`,
+          stage: 'parsing',
+        });
         chunkCards = cardsFromContent(result.content, chunks[index]);
         if (!chunkCards.length) throw new Error('AI 没有生成有效卡片。');
         lastError = null;
         break;
       } catch (error) {
         if (options.signal.aborted) throw abortError();
+        if (
+          error instanceof AiRequestError &&
+          ['auth', 'model', 'request'].includes(error.code)
+        ) {
+          throw error;
+        }
         lastError = error as Error;
       }
     }
 
     if (lastError) {
       skippedChunks += 1;
+      failedChunks.push({
+        chunk: index + 1,
+        message: lastError.message.slice(0, 300),
+      });
     } else {
       cards.push(...chunkCards);
     }
@@ -429,13 +382,15 @@ export async function generateCardsWithAi(
       completed: index + 1,
       total: chunks.length,
       detail: `已完成第 ${index + 1} 个文本块`,
+      stage: 'completed',
     });
   }
 
   if (!cards.length) {
+    const detail = failedChunks.at(-1)?.message;
     throw new Error(
       skippedChunks
-        ? 'AI 未生成有效卡片。请检查模型是否支持 JSON 输出，或关闭 JSON 模式后重试。'
+        ? `AI 未生成有效卡片。${detail ? `最后错误：${detail}` : '请检查模型是否支持 JSON 输出。'}`
         : 'AI 未生成有效卡片。',
     );
   }
@@ -445,5 +400,7 @@ export async function generateCardsWithAi(
     usage,
     processedChunks: chunks.length,
     skippedChunks,
+    retriedRequests,
+    failedChunks,
   };
 }

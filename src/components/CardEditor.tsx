@@ -1,4 +1,5 @@
-import { MapPin, Trash2 } from 'lucide-react';
+import { AlertTriangle, MapPin, ShieldAlert, Trash2 } from 'lucide-react';
+import type { CardQualityIssue } from '../cardQuality';
 import type { Card } from '../types';
 
 export type EditableCardField =
@@ -14,6 +15,7 @@ export type EditableCardField =
 interface CardEditorProps {
   card: Card;
   index: number;
+  qualityIssues?: CardQualityIssue[];
   selected: boolean;
   onDelete: (id: string) => void;
   onOpenSource?: (id: string) => void;
@@ -27,11 +29,12 @@ interface CardEditorProps {
 }
 
 const fieldClass =
-  'w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-relaxed text-slate-900 outline-none transition focus:border-transparent focus:ring-2 focus:ring-blue-500';
+  'w-full rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-sm leading-relaxed text-slate-900 outline-none transition focus:border-transparent focus:ring-2 focus:ring-violet-500';
 
 export function CardEditor({
   card,
   index,
+  qualityIssues = [],
   selected,
   onDelete,
   onOpenSource,
@@ -39,11 +42,14 @@ export function CardEditor({
   onToggle,
   onUpdate,
 }: CardEditorProps) {
+  const hasBlockingIssue = qualityIssues.some(
+    (item) => item.severity === 'blocking',
+  );
   return (
     <article
-      className={`relative rounded-2xl border bg-white p-5 transition ${
+      className={`relative rounded-xl border bg-white p-4 transition ${
         selected
-          ? 'border-blue-400 shadow-sm ring-2 ring-blue-100'
+          ? 'border-violet-400 shadow-sm ring-2 ring-violet-100'
           : card.reviewStatus === 'pending'
             ? 'border-amber-300 bg-amber-50/20 hover:shadow-md'
           : 'border-slate-200 hover:shadow-md'
@@ -55,14 +61,14 @@ export function CardEditor({
             type="checkbox"
             checked={selected}
             onChange={() => onToggle(card.id)}
-            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
             aria-label={`选择第 ${index + 1} 张卡片`}
           />
-          <span className="rounded-full bg-slate-950 px-2.5 py-1 text-xs font-bold text-white">
+          <span className="rounded-full bg-violet-600 px-2.5 py-1 text-xs font-bold text-white">
             {index + 1}
           </span>
         </label>
-        <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-bold text-blue-800">
+        <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold text-violet-800">
           {card.type || '未分类'}
         </span>
         {card.origin === 'ai' && (
@@ -74,9 +80,15 @@ export function CardEditor({
           <button
             type="button"
             onClick={() => onApprove(card.id)}
-            className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 transition hover:bg-amber-200"
+            disabled={hasBlockingIssue}
+            title={
+              hasBlockingIssue
+                ? '请先修正阻塞质量问题'
+                : '批准这张 AI 候选卡'
+            }
+            className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            待审核 · 点击批准
+            {hasBlockingIssue ? '待审核 · 需先修正' : '待审核 · 点击批准'}
           </button>
         )}
         {typeof card.confidence === 'number' && (
@@ -97,6 +109,29 @@ export function CardEditor({
         )}
       </div>
 
+      {qualityIssues.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2" aria-label="卡片质量问题">
+          {qualityIssues.map((item) => (
+            <span
+              key={item.code}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${
+                item.severity === 'blocking'
+                  ? 'bg-red-50 text-red-700'
+                  : 'bg-amber-50 text-amber-700'
+              }`}
+              title={item.message}
+            >
+              {item.severity === 'blocking' ? (
+                <ShieldAlert size={13} />
+              ) : (
+                <AlertTriangle size={13} />
+              )}
+              {item.message}
+            </span>
+          ))}
+        </div>
+      )}
+
       <button
         type="button"
         onClick={() => onDelete(card.id)}
@@ -115,7 +150,7 @@ export function CardEditor({
             onChange={(event) =>
               onUpdate(card.id, 'question', event.target.value)
             }
-            className={`${fieldClass} min-h-28 resize-y`}
+            className={`${fieldClass} min-h-20 resize-y`}
           />
         </label>
         <label className="space-y-2">
@@ -125,7 +160,7 @@ export function CardEditor({
             onChange={(event) =>
               onUpdate(card.id, 'answer', event.target.value)
             }
-            className={`${fieldClass} min-h-28 resize-y`}
+            className={`${fieldClass} min-h-20 resize-y`}
           />
         </label>
       </div>
@@ -140,7 +175,7 @@ export function CardEditor({
             onChange={(event) =>
               onUpdate(card.id, 'options', event.target.value)
             }
-            className={`${fieldClass} min-h-24 resize-y`}
+            className={`${fieldClass} min-h-20 resize-y`}
           />
         </label>
         <label className="space-y-2">
@@ -152,7 +187,7 @@ export function CardEditor({
             onChange={(event) =>
               onUpdate(card.id, 'analysis', event.target.value)
             }
-            className={`${fieldClass} min-h-24 resize-y`}
+            className={`${fieldClass} min-h-20 resize-y`}
           />
         </label>
       </div>
@@ -214,7 +249,7 @@ export function CardEditor({
           <summary className="cursor-pointer text-xs font-semibold text-slate-600">
             查看引用的原文依据
           </summary>
-          <blockquote className="mt-2 whitespace-pre-line border-l-2 border-blue-300 pl-3 text-sm leading-relaxed text-slate-600">
+          <blockquote className="mt-2 whitespace-pre-line border-l-2 border-violet-300 pl-3 text-sm leading-relaxed text-slate-600">
             {card.sourceQuote}
           </blockquote>
         </details>

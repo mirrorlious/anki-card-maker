@@ -81,6 +81,9 @@ export interface AiSettings {
   maxChunks: string;
   cardsPerChunk: string;
   customInstructions: string;
+  requestTimeout: string;
+  maxRetries: string;
+  useCache: boolean;
 }
 
 export interface DraftData {
@@ -114,10 +117,21 @@ export interface AiGenerationResult {
   usage: AiUsage;
   processedChunks: number;
   skippedChunks: number;
+  retriedRequests: number;
+  failedChunks: AiChunkFailure[];
+  fromCache?: boolean;
 }
 
 export interface AiProgress {
   completed: number;
   total: number;
   detail: string;
+  stage?: 'preparing' | 'requesting' | 'retrying' | 'parsing' | 'completed';
+  attempt?: number;
+  maxAttempts?: number;
+}
+
+export interface AiChunkFailure {
+  chunk: number;
+  message: string;
 }

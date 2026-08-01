@@ -262,8 +262,8 @@ export function PdfReader({
   const totalPages = document?.numPages ?? 0;
 
   return (
-    <div className="flex h-full min-h-[720px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-900">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-slate-950 px-3 py-2 text-white">
+    <div className="flex h-full min-h-[640px] flex-col overflow-hidden rounded-xl border border-violet-100 bg-slate-100">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-violet-500 bg-violet-600 px-3 py-2 text-white">
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -333,13 +333,13 @@ export function PdfReader({
 
       <div className="relative flex-1 overflow-auto p-5">
         {!document && !error && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-300">
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
             <LoaderCircle className="mr-2 animate-spin" size={18} />
             正在载入 PDF 阅读器…
           </div>
         )}
         {error && (
-          <div className="mx-auto max-w-lg rounded-xl bg-red-950/80 p-4 text-sm text-red-200">
+          <div className="mx-auto max-w-lg rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
             {error}
           </div>
         )}
@@ -374,7 +374,7 @@ export function PdfReader({
             onPointerDown={startSelection}
           >
             {selectionMode && (
-              <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-blue-600/95 px-4 py-2 text-xs font-semibold text-white shadow-lg">
+              <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-violet-600/95 px-4 py-2 text-xs font-semibold text-white shadow-lg">
                 按住拖动框选原文，松开后自动保存
               </div>
             )}
@@ -412,7 +412,7 @@ export function PdfReader({
                 key={`${rect.x}-${rect.y}-${index}`}
                 className={`pointer-events-none absolute border-2 ${
                   visibleDraftRect === rect
-                    ? 'border-blue-500 bg-blue-300/20'
+                    ? 'border-violet-500 bg-violet-300/20'
                     : 'border-amber-500 bg-amber-300/35 shadow-[0_0_0_1px_rgba(255,255,255,0.8)]'
                 }`}
                 style={{

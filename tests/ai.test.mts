@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  createAiGenerationCacheKey,
   generateCardsWithAi,
   resolveChatEndpoint,
   splitTextForAi,
@@ -17,6 +18,9 @@ const settings: AiSettings = {
   maxChunks: '2',
   cardsPerChunk: '4',
   customInstructions: '',
+  requestTimeout: '45',
+  maxRetries: '2',
+  useCache: true,
 };
 
 test('resolves OpenAI-compatible chat completion endpoints', () => {
@@ -108,7 +112,7 @@ test('tests a custom connection using Chat Completions JSON', async () => {
       }),
       { status: 200 },
     );
-  const model = await testAiConnection(
+  const connection = await testAiConnection(
     {
       ...settings,
       provider: 'custom',
@@ -120,5 +124,75 @@ test('tests a custom connection using Chat Completions JSON', async () => {
     mockFetch,
   );
 
-  assert.equal(model, 'custom-model');
+  assert.equal(connection.model, 'custom-model');
+  assert.equal(
+    connection.endpoint,
+    'https://example.com/v1/chat/completions',
+  );
+  assert.ok(connection.latencyMs >= 0);
+});
+
+test('retries transient failures but not authentication errors', async () => {
+  let transientAttempts = 0;
+  const transientFetch: typeof fetch = async () => {
+    transientAttempts += 1;
+    if (transientAttempts === 1) {
+      return new Response(
+        JSON.stringify({ error: { message: 'temporarily unavailable' } }),
+        { status: 503 },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        model: 'retry-model',
+        choices: [{ message: { content: '{"status":"ok"}' } }],
+      }),
+      { status: 200 },
+    );
+  };
+  const events: string[] = [];
+  const connection = await testAiConnection(
+    { ...settings, model: 'retry-model', apiKey: 'secret' },
+    new AbortController().signal,
+    transientFetch,
+    (event) => events.push(event.phase),
+  );
+  assert.equal(connection.model, 'retry-model');
+  assert.equal(transientAttempts, 2);
+  assert.deepEqual(events, ['requesting', 'retrying', 'requesting']);
+
+  let authAttempts = 0;
+  const authFetch: typeof fetch = async () => {
+    authAttempts += 1;
+    return new Response(
+      JSON.stringify({ error: { message: 'invalid credential' } }),
+      { status: 401 },
+    );
+  };
+  await assert.rejects(
+    testAiConnection(
+      { ...settings, apiKey: 'bad-secret' },
+      new AbortController().signal,
+      authFetch,
+    ),
+    /API Key 无效/,
+  );
+  assert.equal(authAttempts, 1);
+});
+
+test('builds stable AI cache keys without API keys', async () => {
+  const source = '同一份原文。';
+  const first = await createAiGenerationCacheKey(source, settings);
+  const second = await createAiGenerationCacheKey(source, {
+    ...settings,
+    maxRetries: '4',
+    requestTimeout: '120',
+  });
+  const changed = await createAiGenerationCacheKey(source, {
+    ...settings,
+    model: 'another-model',
+  });
+  assert.equal(first, second);
+  assert.notEqual(first, changed);
+  assert.doesNotMatch(first, /secret/i);
 });

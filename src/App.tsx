@@ -34,6 +34,11 @@ import {
   exportFileName,
 } from './exporters';
 import {
+  buildMikiCardPackage,
+  buildMikiCardPackageJson,
+} from './mikiCardPackage';
+import { handoffMikiCardPackage } from './mikiHandoff';
+import {
   buildTextbookCards,
   createCard,
   DEFAULT_PARSER_TEMPLATE,
@@ -729,6 +734,43 @@ export default function App() {
     );
   };
 
+  const exportMikiPackage = (): void => {
+    if (!exportableCards.length) return;
+    downloadBlob(
+      new Blob([
+        buildMikiCardPackageJson({
+          cards: exportableCards,
+          title: settings.deckName,
+          sourceFileName: pdfFile?.name,
+        }),
+      ], { type: 'application/json;charset=utf-8' }),
+      exportFileName(settings.deckName, exportableCards.length, 'miki-cards.json'),
+    );
+    setStatusMessage(`已生成包含 ${exportableCards.length} 张已审核卡片的 Miki 导入文件。`);
+  };
+
+  const sendToMiki = async (): Promise<void> => {
+    if (!exportableCards.length) return;
+    const packageOptions = {
+      cards: exportableCards,
+      title: settings.deckName,
+      sourceFileName: pdfFile?.name,
+    };
+    const packageData = buildMikiCardPackage(packageOptions);
+    setErrorMessage('');
+    setStatusMessage('正在打开 Miki…');
+    try {
+      await handoffMikiCardPackage(packageData);
+      setStatusMessage(`已将 ${packageData.cards.length} 张卡片送入 Miki 审阅台。`);
+    } catch {
+      downloadBlob(
+        new Blob([JSON.stringify(packageData, null, 2)], { type: 'application/json;charset=utf-8' }),
+        exportFileName(settings.deckName, packageData.cards.length, 'miki-cards.json'),
+      );
+      setStatusMessage('跨站交接未完成，已改为下载 Miki 导入文件。');
+    }
+  };
+
   const exportPackage = async (): Promise<void> => {
     if (!exportableCards.length || isExportingPackage) return;
     setIsExportingPackage(true);
@@ -822,6 +864,22 @@ export default function App() {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void sendToMiki()}
+              disabled={!exportableCards.length}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Sparkles size={17} /> 发送到 Miki
+            </button>
+            <button
+              type="button"
+              onClick={exportMikiPackage}
+              disabled={!exportableCards.length}
+              className={buttonSecondary}
+            >
+              <FileJson size={17} /> Miki 文件
+            </button>
             <button
               type="button"
               onClick={exportJson}

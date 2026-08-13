@@ -73,6 +73,17 @@ npm run lint
 npm run build
 ```
 
+## Cloudflare Workers 部署
+
+站点使用 Workers Static Assets 托管，SPA 路由会回退到 `dist/index.html`：
+
+```bash
+npm run cf:check
+npm run cf:deploy
+```
+
+在 Cloudflare Workers Builds 中连接 GitHub 仓库时，构建命令使用 `npm run build`，部署命令使用 `npx wrangler deploy`。生产环境如需把卡片交接到非默认 Miki 域名，可在构建阶段设置 `VITE_MIKI_IMPORT_ORIGIN`。
+
 端到端测试首次需要安装 Chromium：
 
 ```bash

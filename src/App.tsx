@@ -74,7 +74,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   ocrScale: '1.8',
   maxCardsPerPage: '5',
   maxAnswerLength: '220',
-  deckName: 'Anki ???????',
+  deckName: 'Anki 教材与题库卡片',
   parserTemplate: DEFAULT_PARSER_TEMPLATE,
   ai: {
     provider: 'deepseek',
@@ -120,11 +120,11 @@ function normalizeDraftSettings(settings: AppSettings): AppSettings {
 
 function progressText(progress: PdfProgress | null): string {
   if (!progress) return '';
-  if (progress.stage === 'loading') return '???? PDF...';
+  if (progress.stage === 'loading') return '正在载入 PDF...';
   if (progress.stage === 'ocr' && progress.total === 100) {
-    return `${progress.detail ?? '?? OCR'}?${progress.completed}%`;
+    return `${progress.detail ?? '正在 OCR'}：${progress.completed}%`;
   }
-  return `${progress.detail ?? '???'}?${progress.completed}/${progress.total}?`;
+  return `${progress.detail ?? '处理中'}（${progress.completed}/${progress.total}）`;
 }
 
 function parsePositiveInt(value: string, fallback: number): number {
@@ -134,7 +134,7 @@ function parsePositiveInt(value: string, fallback: number): number {
 
 function splitLabels(value: string): string[] {
   return value
-    .split(/[,?]/)
+    .split(/[,，]/)
     .map((label) => label.trim())
     .filter(Boolean);
 }
@@ -164,7 +164,7 @@ export default function App() {
   const [apiKey, setApiKey] = useState('');
   const [draftReady, setDraftReady] = useState(false);
   const [bulkTag, setBulkTag] = useState('');
-  const [bulkType, setBulkType] = useState('???');
+  const [bulkType, setBulkType] = useState('简答题');
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfSourcePages, setPdfSourcePages] = useState<ExtractedPage[]>([]);
   const [workspaceView, setWorkspaceView] = useState<'cards' | 'pdf'>('cards');
@@ -191,11 +191,11 @@ export default function App() {
         );
         setSettings(normalizeDraftSettings(draft.settings));
         setStatusMessage(
-          `??? ${new Date(draft.savedAt).toLocaleString()} ????`,
+          `已恢复 ${new Date(draft.savedAt).toLocaleString()} 的草稿。`,
         );
       })
       .catch(() => {
-        if (active) setErrorMessage('????????????????');
+        if (active) setErrorMessage('草稿恢复失败，但不影响继续使用。');
       })
       .finally(() => {
         if (active) setDraftReady(true);
@@ -269,13 +269,13 @@ export default function App() {
       if (!result.cards.length) {
         throw new Error(
           result.candidateCount
-            ? '?????????????????????'
-            : '??????????????????????????',
+            ? '找到了题号，但缺少可识别的题干或答案标签。'
+            : '未找到符合当前模板的题号，请检查题号正则或切换模板。',
         );
       }
       if (result.skippedCount) {
         setStatusMessage(
-          `?? ${result.cards.length} ?????? ${result.skippedCount} ???????`,
+          `生成 ${result.cards.length} 张卡片，跳过 ${result.skippedCount} 道不完整题目。`,
         );
       }
       return result.cards;
@@ -291,7 +291,7 @@ export default function App() {
 
   const processPastedText = (): void => {
     setErrorMessage('');
-    setStatusMessage('??????...');
+    setStatusMessage('正在生成卡片...');
     try {
       const generated = generateCards(
         inputText,
@@ -304,8 +304,8 @@ export default function App() {
       replaceCards(attachSourceLocations(generated, pdfSourcePages));
       setStatusMessage(
         generated.length
-          ? `????? ${generated.length} ????`
-          : '???????????????????????????????????? AI ????????',
+          ? `完成：生成 ${generated.length} 张卡片。`
+          : '原文已保留，但本地规则暂未识别出可靠卡片。可检查文本、添加空白卡，或使用 AI 辅助生成候选卡。',
       );
     } catch (error) {
       setErrorMessage((error as Error).message);
@@ -322,7 +322,7 @@ export default function App() {
       file.type !== 'application/pdf' &&
       !file.name.toLowerCase().endsWith('.pdf')
     ) {
-      setErrorMessage('??? PDF ??????');
+      setErrorMessage('请选择 PDF 格式的文件。');
       event.target.value = '';
       return;
     }
@@ -331,7 +331,7 @@ export default function App() {
     abortControllerRef.current = controller;
     setIsProcessing(true);
     setErrorMessage('');
-    setStatusMessage('???? PDF...');
+    setStatusMessage('准备读取 PDF...');
     setPdfProgress({ stage: 'loading', completed: 0, total: 0 });
 
     try {
@@ -366,24 +366,24 @@ export default function App() {
         );
       } catch (error) {
         setErrorMessage(
-          `PDF ?????????????${(error as Error).message}`,
+          `PDF 已成功读取，但制卡未完成：${(error as Error).message}`,
         );
         setStatusMessage(
-          `??? ${extractedPages.length} ??OCR ${ocrCount} ???????????`,
+          `已读取 ${extractedPages.length} 页（OCR ${ocrCount} 页），提取原文已保留。`,
         );
         return;
       }
       replaceCards(generated);
       setStatusMessage(
         generated.length
-          ? `????? ${extractedPages.length} ??OCR ${ocrCount} ????? ${generated.length} ????`
-          : `PDF ??????? ${extractedPages.length} ??OCR ${ocrCount} ????????????????????????? AI ?????????`,
+          ? `完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页），生成 ${generated.length} 张卡片。`
+          : `PDF 提取完成：读取 ${extractedPages.length} 页（OCR ${ocrCount} 页）。本地规则暂未生成卡片，原文已保留，可直接使用 AI 辅助或添加空白卡。`,
       );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        setStatusMessage('??? PDF ????????????');
+        setStatusMessage('已取消 PDF 处理，原有卡片未被覆盖。');
       } else {
-        setErrorMessage(`PDF ?????${(error as Error).message}`);
+        setErrorMessage(`PDF 处理失败：${(error as Error).message}`);
         setStatusMessage('');
       }
     } finally {
@@ -431,19 +431,19 @@ export default function App() {
     aiAbortControllerRef.current = controller;
     setIsTestingAi(true);
     setErrorMessage('');
-    setStatusMessage('???? AI ??...');
+    setStatusMessage('正在测试 AI 接口...');
     try {
       const { testAiConnection } = await import('./ai');
       const model = await testAiConnection(
         { ...settings.ai, apiKey },
         controller.signal,
       );
-      setStatusMessage(`AI ????????????${model}`);
+      setStatusMessage(`AI 接口连接成功，响应模型：${model}`);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        setStatusMessage('AI ????????');
+        setStatusMessage('AI 连接测试已取消。');
       } else {
-        setErrorMessage(`AI ?????${(error as Error).message}`);
+        setErrorMessage(`AI 连接失败：${(error as Error).message}`);
         setStatusMessage('');
       }
     } finally {
@@ -459,7 +459,7 @@ export default function App() {
     setIsAiProcessing(true);
     setAiProgress(null);
     setErrorMessage('');
-    setStatusMessage('AI ????????????...');
+    setStatusMessage('AI 正在分析原文并生成候选卡...');
 
     try {
       const { generateCardsWithAi } = await import('./ai');
@@ -486,16 +486,16 @@ export default function App() {
       setSelectedIds(new Set());
       const tokenText =
         result.usage.promptTokens || result.usage.completionTokens
-          ? `??? ${result.usage.promptTokens} ?? / ${result.usage.completionTokens} ?? tokens`
+          ? `，使用 ${result.usage.promptTokens} 输入 / ${result.usage.completionTokens} 输出 tokens`
           : '';
       setStatusMessage(
-        `AI ?? ${uniqueCandidates.length} ?????????? ${result.skippedChunks} ??????${tokenText}????????`,
+        `AI 生成 ${uniqueCandidates.length} 张不重复候选卡，跳过 ${result.skippedChunks} 个异常文本块${tokenText}。请审核后批准。`,
       );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        setStatusMessage('??? AI ????????????');
+        setStatusMessage('已取消 AI 制卡，现有卡片未受影响。');
       } else {
-        setErrorMessage(`AI ?????${(error as Error).message}`);
+        setErrorMessage(`AI 制卡失败：${(error as Error).message}`);
         setStatusMessage('');
       }
     } finally {
@@ -526,7 +526,7 @@ export default function App() {
     const card = cards.find((candidate) => candidate.id === id);
     if (!card) return;
     if (!pdfFile) {
-      setErrorMessage('?????????? PDF??????????');
+      setErrorMessage('当前会话没有可预览的 PDF，请重新上传原文件。');
       return;
     }
     setErrorMessage('');
@@ -577,8 +577,8 @@ export default function App() {
     setIsSelectingSource(false);
     setStatusMessage(
       sourceText
-        ? `????????? PDF ? ${previewPage} ??? OCR ???`
-        : `????????????? PDF ? ${previewPage} ???????`,
+        ? `框选已保存：已关联 PDF 第 ${previewPage} 页内的 OCR 原文。`
+        : `框选已保存：已将该区域设为 PDF 第 ${previewPage} 页的原文依据。`,
     );
   };
 
@@ -587,8 +587,8 @@ export default function App() {
     setIsSelectingSource(next);
     setStatusMessage(
       next
-        ? '????????? PDF ??????????????'
-        : '??????',
+        ? '框选模式已开启：在 PDF 上按住拖动，松开后自动保存。'
+        : '已取消框选。',
     );
   };
 
@@ -596,7 +596,7 @@ export default function App() {
     const card = cards.find((candidate) => candidate.id === sourceCardId);
     if (!card?.sourceQuote) return;
     updateCard(card.id, 'answer', card.sourceQuote);
-    setStatusMessage('??????????????');
+    setStatusMessage('已用当前框选的原文替换答案。');
   };
 
   const clearSourceRects = (): void => {
@@ -609,7 +609,7 @@ export default function App() {
       ),
     );
     setIsSelectingSource(false);
-    setStatusMessage('?????????????????????');
+    setStatusMessage('已清除当前卡片的精确定位，可重新框选原文。');
   };
 
   const deleteCards = (ids: Set<string>): void => {
@@ -622,14 +622,14 @@ export default function App() {
       ids.forEach((id) => next.delete(id));
       return next;
     });
-    setStatusMessage(`??? ${ids.size} ??????????`);
+    setStatusMessage(`已删除 ${ids.size} 张卡片，可立即撤销。`);
   };
 
   const undoDelete = (): void => {
     if (!lastDeletedSnapshot) return;
     setCards(lastDeletedSnapshot);
     setLastDeletedSnapshot(null);
-    setStatusMessage('??????');
+    setStatusMessage('已撤销删除。');
   };
 
   const approveCard = (id: string): void => {
@@ -638,7 +638,7 @@ export default function App() {
         card.id === id ? { ...card, reviewStatus: 'approved' } : card,
       ),
     );
-    setStatusMessage('AI ??????????????????');
+    setStatusMessage('AI 候选卡已批准，可随其他卡片一起导出。');
   };
 
   const approveSelected = (): void => {
@@ -650,7 +650,7 @@ export default function App() {
           : card,
       ),
     );
-    setStatusMessage(`????? ${selectedIds.size} ????`);
+    setStatusMessage(`已批准所选 ${selectedIds.size} 张卡片。`);
   };
 
   const toggleCard = (id: string): void => {
@@ -682,7 +682,7 @@ export default function App() {
       ),
     );
     setBulkTag('');
-    setStatusMessage(`?? ${selectedIds.size} ????????${tag}??`);
+    setStatusMessage(`已为 ${selectedIds.size} 张卡片添加标签“${tag}”。`);
   };
 
   const applyBulkType = (): void => {
@@ -693,7 +693,7 @@ export default function App() {
         selectedIds.has(card.id) ? { ...card, type: bulkType.trim() } : card,
       ),
     );
-    setStatusMessage(`????? ${selectedIds.size} ??????`);
+    setStatusMessage(`已批量修改 ${selectedIds.size} 张卡片类型。`);
   };
 
   const addBlankCard = (): void => {
@@ -703,15 +703,15 @@ export default function App() {
       answer: '',
       point: '',
       analysis: '',
-      type: settings.parseMode === 'exam' ? '???' : '???',
+      type: settings.parseMode === 'exam' ? '选择题' : '简答题',
       chapter: '',
-      tags: ['????'],
+      tags: ['手动添加'],
       origin: 'manual',
     });
     setLastDeletedSnapshot(null);
     setCards((current) => [card, ...current]);
     setSourceCardId(card.id);
-    setStatusMessage('????????????????');
+    setStatusMessage('已添加空白卡片，请在预览区编辑。');
   };
 
   const exportText = (): void => {
@@ -746,7 +746,7 @@ export default function App() {
       ], { type: 'application/json;charset=utf-8' }),
       exportFileName(settings.deckName, exportableCards.length, 'miki-cards.json'),
     );
-    setStatusMessage(`????? ${exportableCards.length} ??????? Miki ?????`);
+    setStatusMessage(`已生成包含 ${exportableCards.length} 张已审核卡片的 Miki 导入文件。`);
   };
 
   const sendToMiki = async (): Promise<void> => {
@@ -758,16 +758,16 @@ export default function App() {
     };
     const packageData = buildMikiCardPackage(packageOptions);
     setErrorMessage('');
-    setStatusMessage('???? Miki?');
+    setStatusMessage('正在打开 Miki…');
     try {
       await handoffMikiCardPackage(packageData);
-      setStatusMessage(`?? ${packageData.cards.length} ????? Miki ????`);
+      setStatusMessage(`已将 ${packageData.cards.length} 张卡片送入 Miki 审阅台。`);
     } catch {
       downloadBlob(
         new Blob([JSON.stringify(packageData, null, 2)], { type: 'application/json;charset=utf-8' }),
         exportFileName(settings.deckName, packageData.cards.length, 'miki-cards.json'),
       );
-      setStatusMessage('????????????? Miki ?????');
+      setStatusMessage('跨站交接未完成，已改为下载 Miki 导入文件。');
     }
   };
 
@@ -775,7 +775,7 @@ export default function App() {
     if (!exportableCards.length || isExportingPackage) return;
     setIsExportingPackage(true);
     setErrorMessage('');
-    setStatusMessage('???? Anki .apkg ?...');
+    setStatusMessage('正在生成 Anki .apkg 包...');
     try {
       const blob = await buildAnkiPackage(exportableCards, settings.deckName);
       downloadBlob(
@@ -783,10 +783,10 @@ export default function App() {
         exportFileName(settings.deckName, exportableCards.length, 'apkg'),
       );
       setStatusMessage(
-        `????? ${exportableCards.length} ??????? .apkg?`,
+        `已生成包含 ${exportableCards.length} 张已审核卡片的 .apkg。`,
       );
     } catch (error) {
-      setErrorMessage(`Anki ??????${(error as Error).message}`);
+      setErrorMessage(`Anki 包生成失败：${(error as Error).message}`);
       setStatusMessage('');
     } finally {
       setIsExportingPackage(false);
@@ -796,7 +796,7 @@ export default function App() {
   const resetWorkspace = async (): Promise<void> => {
     if (
       (cards.length || inputText) &&
-      !window.confirm('??????????????????')
+      !window.confirm('确定清空当前卡片、文本和本地草稿吗？')
     ) {
       return;
     }
@@ -816,7 +816,7 @@ export default function App() {
     setIsSelectingSource(false);
     setAiProgress(null);
     setErrorMessage('');
-    setStatusMessage('???????');
+    setStatusMessage('工作区已清空。');
   };
 
   const selectTemplate = (id: string): void => {
@@ -850,15 +850,15 @@ export default function App() {
         <header className="flex flex-col gap-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-              <ScanText size={14} /> PDF ? OCR ? Anki ???
+              <ScanText size={14} /> PDF · OCR · Anki 一体化
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-slate-950">
-                Anki ??????
+                Anki 批量制卡引擎
               </h1>
               <p className="mt-1 text-sm text-slate-500">
-                ???????????????OCR??????????
-                .apkg?
+                兼容教材与题库，支持本地解析、OCR、人工精修和直接导出
+                .apkg。
               </p>
             </div>
           </div>
@@ -870,7 +870,7 @@ export default function App() {
               disabled={!exportableCards.length}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              <Sparkles size={17} /> ??? Miki
+              <Sparkles size={17} /> 发送到 Miki
             </button>
             <button
               type="button"
@@ -878,7 +878,7 @@ export default function App() {
               disabled={!exportableCards.length}
               className={buttonSecondary}
             >
-              <FileJson size={17} /> Miki ??
+              <FileJson size={17} /> Miki 文件
             </button>
             <button
               type="button"
@@ -907,7 +907,7 @@ export default function App() {
               ) : (
                 <FileArchive size={17} />
               )}
-              ?? .apkg
+              导出 .apkg
             </button>
           </div>
         </header>
@@ -926,7 +926,7 @@ export default function App() {
                       : 'text-slate-500 hover:bg-slate-50'
                   }`}
                 >
-                  PDF ??
+                  PDF 上传
                 </button>
                 <button
                   type="button"
@@ -938,7 +938,7 @@ export default function App() {
                       : 'text-slate-500 hover:bg-slate-50'
                   }`}
                 >
-                  ????
+                  文本粘贴
                 </button>
               </div>
 
@@ -953,7 +953,7 @@ export default function App() {
                         : 'text-slate-500'
                     }`}
                   >
-                    ?????
+                    教材背诵卡
                   </button>
                   <button
                     type="button"
@@ -964,21 +964,21 @@ export default function App() {
                         : 'text-slate-500'
                     }`}
                   >
-                    ?????
+                    题库解析卡
                   </button>
                 </div>
 
                 <details className="rounded-2xl border border-violet-200 bg-violet-50/50 p-4">
                   <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-violet-800">
-                    <Sparkles size={16} /> AI ???????
+                    <Sparkles size={16} /> AI 辅助生成候选卡
                   </summary>
                   <div className="mt-4 space-y-3">
                     <p className="text-xs leading-relaxed text-violet-700">
-                      AI ? PDF/OCR
-                      ???????????????????????????????????????????
+                      AI 在 PDF/OCR
+                      提取之后介入：拆分知识点、生成卡片并补充标签。结果默认标记为待审核，不会覆盖现有卡片。
                     </p>
                     <label className="space-y-1 text-xs font-medium text-slate-500">
-                      ????
+                      接口预设
                       <select
                         value={settings.ai.provider}
                         onChange={(event) =>
@@ -989,9 +989,9 @@ export default function App() {
                         className={inputClass}
                       >
                         <option value="deepseek">DeepSeek</option>
-                        <option value="ollama">?? Ollama</option>
+                        <option value="ollama">本地 Ollama</option>
                         <option value="custom">
-                          ??? OpenAI-compatible
+                          自定义 OpenAI-compatible
                         </option>
                       </select>
                     </label>
@@ -1007,18 +1007,18 @@ export default function App() {
                       />
                     </label>
                     <label className="space-y-1 text-xs font-medium text-slate-500">
-                      ??
+                      模型
                       <input
                         value={settings.ai.model}
                         onChange={(event) =>
                           updateAiSetting('model', event.target.value)
                         }
-                        placeholder="????"
+                        placeholder="模型名称"
                         className={inputClass}
                       />
                     </label>
                     <label className="space-y-1 text-xs font-medium text-slate-500">
-                      API Key????????????
+                      API Key（仅保存在当前页面会话）
                       <input
                         type="password"
                         autoComplete="off"
@@ -1026,7 +1026,7 @@ export default function App() {
                         onChange={(event) => setApiKey(event.target.value)}
                         placeholder={
                           settings.ai.provider === 'ollama'
-                            ? '?????????'
+                            ? '本地接口通常可留空'
                             : 'sk-...'
                         }
                         className={inputClass}
@@ -1045,7 +1045,7 @@ export default function App() {
                         ) : (
                           <CheckCircle size={16} />
                         )}
-                        ????
+                        测试连接
                       </button>
                       {isAiProcessing ? (
                         <button
@@ -1053,7 +1053,7 @@ export default function App() {
                           onClick={cancelAiProcessing}
                           className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100"
                         >
-                          <XCircle size={16} /> ?? AI
+                          <XCircle size={16} /> 取消 AI
                         </button>
                       ) : (
                         <button
@@ -1066,25 +1066,25 @@ export default function App() {
                           }
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
-                          <Sparkles size={16} /> ?????
+                          <Sparkles size={16} /> 生成候选卡
                         </button>
                       )}
                     </div>
 
                     {aiProgress && (
                       <div className="rounded-xl bg-white px-3 py-2 text-xs text-violet-700">
-                        {aiProgress.detail}?{aiProgress.completed}/
-                        {aiProgress.total}?
+                        {aiProgress.detail}（{aiProgress.completed}/
+                        {aiProgress.total}）
                       </div>
                     )}
 
                     <details className="rounded-xl border border-violet-100 bg-white p-3">
                       <summary className="cursor-pointer text-xs font-semibold text-slate-600">
-                        AI ?????????
+                        AI 调用范围与高级设置
                       </summary>
                       <div className="mt-3 grid grid-cols-2 gap-3">
                         <label className="space-y-1 text-xs text-slate-500">
-                          ?????
+                          每块字符数
                           <input
                             type="number"
                             min="1000"
@@ -1097,7 +1097,7 @@ export default function App() {
                           />
                         </label>
                         <label className="space-y-1 text-xs text-slate-500">
-                          ?????
+                          最多文本块
                           <input
                             type="number"
                             min="1"
@@ -1110,7 +1110,7 @@ export default function App() {
                           />
                         </label>
                         <label className="space-y-1 text-xs text-slate-500">
-                          ??????
+                          每块最多卡片
                           <input
                             type="number"
                             min="1"
@@ -1133,11 +1133,11 @@ export default function App() {
                               updateAiSetting('jsonMode', event.target.checked)
                             }
                           />
-                          ?? JSON ??
+                          请求 JSON 模式
                         </label>
                       </div>
                       <label className="mt-3 block space-y-1 text-xs text-slate-500">
-                        ??????
+                        补充制卡要求
                         <textarea
                           value={settings.ai.customInstructions}
                           onChange={(event) =>
@@ -1146,7 +1146,7 @@ export default function App() {
                               event.target.value,
                             )
                           }
-                          placeholder="?????????????????? 100 ??"
+                          placeholder="例如：优先生成罪名辨析卡；答案不超过 100 字。"
                           className={`${inputClass} min-h-20 resize-y`}
                         />
                       </label>
@@ -1182,10 +1182,10 @@ export default function App() {
                       <p className="text-sm font-semibold text-slate-700">
                         {isProcessing
                           ? progressText(pdfProgress)
-                          : '???? PDF'}
+                          : '点击上传 PDF'}
                       </p>
                       <p className="mt-1 text-xs text-slate-500">
-                        ????????????? OCR
+                        文本层优先；扫描页按需调用 OCR
                       </p>
                     </label>
 
@@ -1195,13 +1195,13 @@ export default function App() {
                         onClick={cancelProcessing}
                         className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100"
                       >
-                        <XCircle size={17} /> ????
+                        <XCircle size={17} /> 取消处理
                       </button>
                     )}
 
                     <div className="grid grid-cols-2 gap-3">
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        ???
+                        起始页
                         <input
                           type="number"
                           min="1"
@@ -1213,7 +1213,7 @@ export default function App() {
                         />
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        ???
+                        结束页
                         <input
                           type="number"
                           min="1"
@@ -1225,7 +1225,7 @@ export default function App() {
                         />
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        ????
+                        识别方式
                         <select
                           value={settings.extractMode}
                           onChange={(event) =>
@@ -1236,13 +1236,13 @@ export default function App() {
                           }
                           className={inputClass}
                         >
-                          <option value="auto">????</option>
-                          <option value="ocr">?? OCR</option>
-                          <option value="text">????</option>
+                          <option value="auto">自动判断</option>
+                          <option value="ocr">强制 OCR</option>
+                          <option value="text">仅文本层</option>
                         </select>
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        OCR ???
+                        OCR 清晰度
                         <input
                           type="number"
                           min="1"
@@ -1265,8 +1265,8 @@ export default function App() {
                       className="h-64 w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm outline-none focus:border-transparent focus:ring-2 focus:ring-blue-500"
                       placeholder={
                         settings.parseMode === 'textbook'
-                          ? '???????????????????????...'
-                          : '????????????????????...'
+                          ? '粘贴教材正文，系统会生成名词解释、简答和填空卡...'
+                          : '粘贴包含题干、选项、答案和解析的题库文本...'
                       }
                     />
                     <button
@@ -1275,7 +1275,7 @@ export default function App() {
                       disabled={!inputText.trim() || isProcessing}
                       className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
-                      <BookOpen size={18} /> ????
+                      <BookOpen size={18} /> 开始制卡
                     </button>
                   </div>
                 )}
@@ -1283,7 +1283,7 @@ export default function App() {
                 {settings.parseMode === 'textbook' ? (
                   <div className="grid grid-cols-2 gap-3">
                     <label className="space-y-1 text-xs font-medium text-slate-500">
-                      ??????
+                      每页最多卡片
                       <input
                         type="number"
                         min="1"
@@ -1296,7 +1296,7 @@ export default function App() {
                       />
                     </label>
                     <label className="space-y-1 text-xs font-medium text-slate-500">
-                      ??????
+                      答案最长字数
                       <input
                         type="number"
                         min="60"
@@ -1312,11 +1312,11 @@ export default function App() {
                 ) : (
                   <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-slate-700">
-                      <Settings2 size={16} /> ??????
+                      <Settings2 size={16} /> 题库解析模板
                     </summary>
                     <div className="mt-4 space-y-3">
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        ??
+                        预设
                         <select
                           value={
                             settings.parserTemplate.id ===
@@ -1335,16 +1335,16 @@ export default function App() {
                           className={inputClass}
                         >
                           <option value={DEFAULT_PARSER_TEMPLATE.id}>
-                            ?????
+                            刑法母子题
                           </option>
                           <option value={GENERAL_PARSER_TEMPLATE.id}>
-                            ?????
+                            通用选择题
                           </option>
-                          <option value="custom">???</option>
+                          <option value="custom">自定义</option>
                         </select>
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        ????
+                        模板名称
                         <input
                           value={settings.parserTemplate.name}
                           onChange={(event) =>
@@ -1354,7 +1354,7 @@ export default function App() {
                         />
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-500">
-                        ????
+                        题号正则
                         <textarea
                           value={settings.parserTemplate.questionPattern}
                           onChange={(event) =>
@@ -1368,17 +1368,17 @@ export default function App() {
                       </label>
                       {(
                         [
-                          ['answerLabels', '????'],
-                          ['pointLabels', '????'],
-                          ['analysisLabels', '????'],
-                          ['trailingLabels', '????'],
+                          ['answerLabels', '答案标签'],
+                          ['pointLabels', '考点标签'],
+                          ['analysisLabels', '解析标签'],
+                          ['trailingLabels', '截断标签'],
                         ] as const
                       ).map(([key, label]) => (
                         <label
                           key={key}
                           className="space-y-1 text-xs font-medium text-slate-500"
                         >
-                          {label}??????
+                          {label}（逗号分隔）
                           <input
                             value={settings.parserTemplate[key].join(', ')}
                             onChange={(event) =>
@@ -1396,7 +1396,7 @@ export default function App() {
                 )}
 
                 <label className="space-y-1 text-xs font-medium text-slate-500">
-                  Anki ????
+                  Anki 牌组名称
                   <input
                     value={settings.deckName}
                     onChange={(event) =>
@@ -1437,20 +1437,20 @@ export default function App() {
             <section className="rounded-3xl border border-blue-100 bg-blue-50/70 p-5 text-sm text-blue-900">
               <h3 className="mb-2 flex items-center gap-2 font-semibold">
                 <CheckCircle size={16} />
-                {settings.parseMode === 'textbook' ? '????' : '????'}
+                {settings.parseMode === 'textbook' ? '使用建议' : '制卡说明'}
               </h3>
               {settings.parseMode === 'textbook' ? (
                 <ul className="list-inside list-disc space-y-1.5 opacity-90">
-                  <li>???????????????????? OCR?</li>
-                  <li>?? OCR ?????????????????</li>
-                  <li>?????????????????????????</li>
-                  <li>?????????????????</li>
+                  <li>扫描教材优先使用“自动判断”，仅图片页会 OCR。</li>
+                  <li>首次 OCR 会下载中文模型，之后浏览器会缓存。</li>
+                  <li>知识内容优先，前言、目录、版本与教材编排不会制卡。</li>
+                  <li>建议按章处理，并在导出前人工精修。</li>
                 </ul>
               ) : (
                 <ul className="list-inside list-disc space-y-1.5 opacity-90">
-                  <li>????????????????????</li>
-                  <li>??????????????</li>
-                  <li>???????? HTML???????</li>
+                  <li>可切换预设或自定义题号、答案和解析标签。</li>
+                  <li>不完整题目会跳过并显示数量。</li>
+                  <li>导出内容自动转义 HTML，避免误执行。</li>
                 </ul>
               )}
             </section>
@@ -1460,7 +1460,7 @@ export default function App() {
               onClick={() => void resetWorkspace()}
               className="w-full rounded-xl px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-red-50 hover:text-red-600"
             >
-              ????????????
+              清空当前工作区与本地草稿
             </button>
           </aside>
 
@@ -1470,13 +1470,13 @@ export default function App() {
                 <div>
                   <h2 className="font-bold text-slate-900">
                     {workspaceView === 'pdf'
-                      ? 'PDF ????'
-                      : '???????'}
+                      ? 'PDF 对照校订'
+                      : '卡片预览与精修'}
                   </h2>
                   <p className="mt-1 text-sm text-slate-500">
                     {workspaceView === 'pdf'
-                      ? '??????????????????????'
-                      : '?????????????????????'}
+                      ? '定位原文、高亮依据，并在阅读时直接修正卡片。'
+                      : '全字段可编辑；草稿会自动保存在本机浏览器。'}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1493,7 +1493,7 @@ export default function App() {
                           : 'text-slate-600 hover:bg-slate-100'
                       }`}
                     >
-                      <List size={14} /> ??
+                      <List size={14} /> 卡片
                     </button>
                     <button
                       type="button"
@@ -1506,16 +1506,16 @@ export default function App() {
                       }`}
                       title={
                         pdfFile
-                          ? `?? ${pdfFile.name}`
-                          : '?? PDF ????????'
+                          ? `打开 ${pdfFile.name}`
+                          : '上传 PDF 后可使用对照阅读'
                       }
                     >
-                      <MapPin size={14} /> PDF ??
+                      <MapPin size={14} /> PDF 对照
                     </button>
                   </div>
                   <span className="rounded-full bg-slate-200 px-3 py-1 text-sm font-semibold text-slate-700">
-                    ? {cards.length} ?
-                    {pendingCount > 0 ? ` ? ??? ${pendingCount}` : ''}
+                    共 {cards.length} 张
+                    {pendingCount > 0 ? ` · 待审核 ${pendingCount}` : ''}
                   </span>
                   {inputText.trim() && (
                     <button
@@ -1523,7 +1523,7 @@ export default function App() {
                       onClick={processPastedText}
                       className={buttonSecondary}
                     >
-                      <RefreshCw size={16} /> ????????
+                      <RefreshCw size={16} /> 重新生成本地卡片
                     </button>
                   )}
                   <button
@@ -1531,7 +1531,7 @@ export default function App() {
                     onClick={addBlankCard}
                     className={buttonSecondary}
                   >
-                    <Plus size={16} /> ????
+                    <Plus size={16} /> 添加卡片
                   </button>
                 </div>
               </div>
@@ -1543,12 +1543,12 @@ export default function App() {
                     onClick={toggleAllCards}
                     className={buttonSecondary}
                   >
-                    {allSelected ? '????' : '??'}
+                    {allSelected ? '取消全选' : '全选'}
                   </button>
                   {selectedCount > 0 && (
                     <>
                       <span className="text-sm font-medium text-blue-700">
-                        ?? {selectedCount} ?
+                        已选 {selectedCount} 张
                       </span>
                       {selectedPendingCount > 0 && (
                         <button
@@ -1556,14 +1556,14 @@ export default function App() {
                           onClick={approveSelected}
                           className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm font-semibold text-amber-700 hover:bg-amber-100"
                         >
-                          <CheckCircle size={16} /> ????
+                          <CheckCircle size={16} /> 批准所选
                         </button>
                       )}
                       <div className="flex min-w-52 flex-1 items-center gap-2">
                         <input
                           value={bulkTag}
                           onChange={(event) => setBulkTag(event.target.value)}
-                          placeholder="??????"
+                          placeholder="批量添加标签"
                           className={inputClass}
                         />
                         <button
@@ -1572,7 +1572,7 @@ export default function App() {
                           disabled={!bulkTag.trim()}
                           className={buttonSecondary}
                         >
-                          <Tags size={16} /> ??
+                          <Tags size={16} /> 添加
                         </button>
                       </div>
                       <select
@@ -1580,24 +1580,24 @@ export default function App() {
                         onChange={(event) => setBulkType(event.target.value)}
                         className={`${inputClass} w-auto`}
                       >
-                        <option>???</option>
-                        <option>????</option>
-                        <option>???</option>
-                        <option>???</option>
+                        <option>选择题</option>
+                        <option>名词解释</option>
+                        <option>简答题</option>
+                        <option>填空题</option>
                       </select>
                       <button
                         type="button"
                         onClick={applyBulkType}
                         className={buttonSecondary}
                       >
-                        ?????
+                        批量改类型
                       </button>
                       <button
                         type="button"
                         onClick={() => deleteCards(selectedIds)}
                         className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100"
                       >
-                        <Trash2 size={16} /> ????
+                        <Trash2 size={16} /> 删除所选
                       </button>
                     </>
                   )}
@@ -1606,13 +1606,13 @@ export default function App() {
 
               {lastDeletedSnapshot && (
                 <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                  <span>??????</span>
+                  <span>卡片已删除。</span>
                   <button
                     type="button"
                     onClick={undoDelete}
                     className="inline-flex items-center gap-1 font-semibold hover:underline"
                   >
-                    <RotateCcw size={15} /> ????
+                    <RotateCcw size={15} /> 撤销删除
                   </button>
                 </div>
               )}
@@ -1623,11 +1623,11 @@ export default function App() {
                 {cards.length === 0 ? (
                   <div className="flex h-full min-h-[620px] flex-col items-center justify-center px-8 text-center text-slate-400">
                     <FileText className="mb-4 h-16 w-16 opacity-20" />
-                    <p className="font-medium text-slate-500">????</p>
+                    <p className="font-medium text-slate-500">暂无卡片</p>
                     <p className="mt-2 max-w-md text-sm">
                       {inputText.trim()
-                        ? '???????????????????????????? AI ????????'
-                        : '?? PDF ?????????????????????????????'}
+                        ? '原文已经提取，可重新生成本地卡片、添加空白卡，或使用左侧 AI 辅助生成候选卡。'
+                        : '上传 PDF 或粘贴文本。系统生成草稿后，可在这里修改、批量整理并导出。'}
                     </p>
                   </div>
                 ) : (
@@ -1672,11 +1672,11 @@ export default function App() {
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h3 className="font-bold text-slate-900">
-                          ?????
+                          当前页卡片
                         </h3>
                         <p className="mt-1 text-xs text-slate-500">
-                          PDF ? {previewPage} ? ? {cardsOnPreviewPage.length}{' '}
-                          ?
+                          PDF 第 {previewPage} 页 · {cardsOnPreviewPage.length}{' '}
+                          张
                         </p>
                       </div>
                       <span className="max-w-36 truncate rounded-lg bg-slate-100 px-2 py-1 text-[11px] text-slate-500">
@@ -1697,12 +1697,12 @@ export default function App() {
                             }`}
                             title={card.question}
                           >
-                            {card.question || '?????'}
+                            {card.question || '未命名卡片'}
                           </button>
                         ))
                       ) : (
                         <p className="text-xs leading-relaxed text-slate-400">
-                          ????????????????????????????
+                          当前页还没有卡片。可选择任意卡片后，在本页重新框选原文。
                         </p>
                       )}
                     </div>
@@ -1712,27 +1712,27 @@ export default function App() {
                     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-slate-950 px-2 py-1 text-[11px] font-bold text-white">
-                          ?? {cards.indexOf(sourceCard) + 1}
+                          卡片 {cards.indexOf(sourceCard) + 1}
                         </span>
                         {sourceCard.sourcePage && (
                           <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">
-                            ??? {sourceCard.sourcePage} ?
+                            来源第 {sourceCard.sourcePage} 页
                           </span>
                         )}
                         {sourceCard.sourceRects?.length ? (
                           <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700">
-                            ?????
+                            已精确定位
                           </span>
                         ) : (
                           <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
-                            ?????
+                            仅页码定位
                           </span>
                         )}
                       </div>
 
                       <label className="mt-4 block space-y-1.5">
                         <span className="text-xs font-semibold text-slate-500">
-                          ??
+                          问题
                         </span>
                         <textarea
                           value={sourceCard.question}
@@ -1748,7 +1748,7 @@ export default function App() {
                       </label>
                       <label className="mt-3 block space-y-1.5">
                         <span className="text-xs font-semibold text-slate-500">
-                          ??
+                          答案
                         </span>
                         <textarea
                           value={sourceCard.answer}
@@ -1766,7 +1766,7 @@ export default function App() {
                       {sourceCard.sourceQuote && (
                         <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
                           <p className="text-[11px] font-bold text-blue-700">
-                            ????????
+                            提取时引用的原文
                           </p>
                           <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-line text-xs leading-relaxed text-blue-900">
                             {sourceCard.sourceQuote}
@@ -1777,7 +1777,7 @@ export default function App() {
                               onClick={replaceAnswerWithSourceQuote}
                               className="mt-2 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-blue-700 shadow-sm transition hover:bg-blue-100"
                             >
-                              ?????????
+                              用框选原文替换答案
                             </button>
                           ) : null}
                         </div>
@@ -1791,7 +1791,7 @@ export default function App() {
                           className={buttonSecondary}
                         >
                           <Focus size={15} />
-                          {focusSource ? '????' : '????'}
+                          {focusSource ? '取消遮罩' : '聚焦原文'}
                         </button>
                         <button
                           type="button"
@@ -1803,35 +1803,35 @@ export default function App() {
                           }`}
                         >
                           <MousePointer2 size={15} />
-                          {isSelectingSource ? '????' : '??????'}
+                          {isSelectingSource ? '取消框选' : '重新框选来源'}
                         </button>
                       </div>
                       {isSelectingSource ? (
                         <p className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-relaxed text-blue-700">
-                          ?? PDF ??????????????????????????????????????????????????????????
+                          请在 PDF 页面上按住并拖动，松开后自动保存。即使鼠标移出页面再松开也可以。框选会更新来源和引用原文，但不会自动覆盖问题或答案。
                         </p>
                       ) : sourceCard.sourceRects?.length ? (
                         <div className="mt-3">
                           <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs leading-relaxed text-emerald-700">
-                            ?????????????????????????????????????????????
+                            原文位置已保存。橙色区域是当前卡片依据；需要改写答案时，可点击上方“用框选原文替换答案”。
                           </p>
                         <button
                           type="button"
                           onClick={clearSourceRects}
                             className="mt-1 w-full rounded-lg px-3 py-2 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-red-600"
                         >
-                          ??????
+                          清除精确定位
                         </button>
                         </div>
                       ) : (
                         <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
-                          ?????????????????????????????????????????
+                          暂未找到精确坐标。已跳到来源页，你可以点击“重新框选来源”，在页面上拖出原文区域。
                         </p>
                       )}
                     </section>
                   ) : (
                     <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
-                      ?????????????? PDF ??????
+                      添加或选择一张卡片后，即可在 PDF 上绑定原文。
                     </section>
                   )}
                 </aside>

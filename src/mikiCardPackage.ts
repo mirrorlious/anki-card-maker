@@ -62,10 +62,10 @@ function cleanRects(rects: PdfSourceRect[] | undefined): PdfSourceRect[] {
 
 function getCardType(card: Card): MikiCardPackageCardV1['type'] {
   const type = cleanText(card.type, 80).toLowerCase();
-  if (/选择|choice|单选|多选/.test(type) || cleanText(card.options, MAX_FRONT_LENGTH)) {
+  if (/??|choice|??|??/.test(type) || cleanText(card.options, MAX_FRONT_LENGTH)) {
     return 'choice';
   }
-  if (/填空|cloze/.test(type)) return 'cloze';
+  if (/??|cloze/.test(type)) return 'cloze';
   return 'qa';
 }
 
@@ -80,9 +80,9 @@ function buildPlainFront(card: Card): string {
 
 function buildPlainBack(card: Card): string {
   return cleanText([
-    card.answer ? `答案：${cleanText(card.answer, MAX_BACK_LENGTH)}` : '',
-    card.point ? `考点：${cleanText(card.point, MAX_BACK_LENGTH)}` : '',
-    card.analysis ? `解析：${cleanText(card.analysis, MAX_BACK_LENGTH)}` : '',
+    card.answer ? `???${cleanText(card.answer, MAX_BACK_LENGTH)}` : '',
+    card.point ? `???${cleanText(card.point, MAX_BACK_LENGTH)}` : '',
+    card.analysis ? `???${cleanText(card.analysis, MAX_BACK_LENGTH)}` : '',
   ].filter(Boolean).join('\n\n'), MAX_BACK_LENGTH);
 }
 
@@ -134,11 +134,11 @@ export function buildMikiCardPackage({
     .filter((card): card is MikiCardPackageCardV1 => Boolean(card));
 
   if (approvedCards.length === 0) {
-    throw new Error('没有可导出的已审核卡片。');
+    throw new Error('????????????');
   }
 
   const safeCreatedAt = new Date(createdAt);
-  if (Number.isNaN(safeCreatedAt.getTime())) throw new Error('导出时间无效。');
+  if (Number.isNaN(safeCreatedAt.getTime())) throw new Error('???????');
 
   const fileName = cleanText(sourceFileName, MAX_TITLE_LENGTH);
   return {
@@ -146,7 +146,7 @@ export function buildMikiCardPackage({
     schemaVersion: MIKI_CARD_PACKAGE_SCHEMA_VERSION,
     packageId: cleanText(packageId, 180) || defaultPackageIdFactory(),
     createdAt: safeCreatedAt.toISOString(),
-    title: cleanText(title, MAX_TITLE_LENGTH) || '未命名卡组',
+    title: cleanText(title, MAX_TITLE_LENGTH) || '?????',
     generator: {
       id: 'anki-card-maker',
       version: cleanText(generatorVersion, 40) || '1.0.0',

@@ -17,9 +17,9 @@
   "schemaVersion": 1,
   "packageId": "mcp_example",
   "createdAt": "2026-08-13T08:00:00.000Z",
-  "title": "民法冲刺",
+  "title": "????",
   "generator": { "id": "anki-card-maker", "version": "1.0.0" },
-  "source": { "kind": "pdf", "fileName": "民法.pdf" },
+  "source": { "kind": "pdf", "fileName": "??.pdf" },
   "cards": []
 }
 ```

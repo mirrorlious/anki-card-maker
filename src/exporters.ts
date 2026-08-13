@@ -12,7 +12,7 @@ function safeFileName(value: string): string {
         (character) => (character.charCodeAt(0) < 32 ? '_' : character),
       )
       .replace(/[. ]+$/g, '')
-      .slice(0, 80) || 'Anki_制卡器'
+      .slice(0, 80) || 'Anki_???'
   );
 }
 
@@ -61,11 +61,11 @@ export async function buildAnkiPackage(
     await Promise.all([import('sql.js'), import('ankipack')]);
   const SQL = await initSqlJs({ locateFile: () => sqlWasmUrl });
   const model = new Model({
-    name: 'Anki 制卡器',
+    name: 'Anki ???',
     fields: [{ name: 'Front' }, { name: 'Back' }],
     templates: [
       {
-        name: '卡片 1',
+        name: '?? 1',
         questionFormat: '{{Front}}',
         answerFormat:
           '{{FrontSide}}<hr id="answer" style="margin:18px 0">{{Back}}',
@@ -82,10 +82,10 @@ export async function buildAnkiPackage(
   margin: 0 auto;
 }`,
   });
-  const normalizedDeckName = deckName.trim() || 'Anki 制卡器';
+  const normalizedDeckName = deckName.trim() || 'Anki ???';
   const deck = new Deck({
     name: normalizedDeckName,
-    description: '由 Anki 批量制卡引擎生成',
+    description: '? Anki ????????',
     config: new DeckConfig({
       name: `${normalizedDeckName} FSRS`,
       desiredRetention: 0.9,
@@ -117,5 +117,5 @@ export function exportFileName(
   cardCount: number,
   extension: 'txt' | 'json' | 'apkg' | 'miki-cards.json',
 ): string {
-  return `${safeFileName(deckName)}_${cardCount}张.${extension}`;
+  return `${safeFileName(deckName)}_${cardCount}?.${extension}`;
 }

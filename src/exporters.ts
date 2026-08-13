@@ -115,7 +115,7 @@ export async function buildAnkiPackage(
 export function exportFileName(
   deckName: string,
   cardCount: number,
-  extension: 'txt' | 'json' | 'apkg',
+  extension: 'txt' | 'json' | 'apkg' | 'miki-cards.json',
 ): string {
   return `${safeFileName(deckName)}_${cardCount}张.${extension}`;
 }

@@ -26,6 +26,7 @@ import {
   type EditableCardField,
 } from './components/CardEditor';
 import { PdfReader } from './components/PdfReader';
+import { MikiPackageExport } from './components/MikiPackageExport';
 import {
   buildAnkiPackage,
   buildAnkiText,
@@ -822,6 +823,7 @@ export default function App() {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            <MikiPackageExport cards={cards} title={settings.deckName} fileName={pdfFile?.name} className={buttonSecondary} />
             <button
               type="button"
               onClick={exportJson}
